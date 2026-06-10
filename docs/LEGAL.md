@@ -6,6 +6,13 @@ change at any time without notice; Threnody cannot guarantee continued
 compatibility with any provider's rules. Consult qualified counsel before
 commercializing routing or exposing Threnody to many users.
 
+## How this compares to compliance-oriented orchestrators
+
+Some multi-agent tools document regulatory mappings (EU AI Act, SOC 2, DORA)
+or ship audit-grade evidence bundles. **Threnody does not.** This document is
+operator guidance and risk framing only — not a certification, legal opinion, or
+compliance attestation.
+
 ## What Threnody is
 
 Threnody is a **local-first MCP orchestrator** that:
@@ -21,6 +28,52 @@ Threnody is **not**:
   Google, Cursor, JetBrains, or any other AI provider named in documentation
 - A reseller or proxy of provider subscriptions
 - A substitute for reading each provider's current terms of service
+
+## What leaves the machine
+
+The safe answer is: **it depends on what you enable.**
+
+### Default local MCP mode
+
+- Orchestration state, routing cache, telemetry, and learning data stay on disk
+  under `~/.local/lib/threnody/`
+- The MCP server communicates over stdio with the host shell that launched it
+- Threnody does not require a Threnody-hosted control plane or central API keys
+
+### Typical outbound traffic
+
+Outbound network traffic usually comes from:
+
+- The LLM provider used by the CLI you routed to (Anthropic, OpenAI, GitHub,
+  Google, Cursor, etc.)
+- Package install/update workflows you run separately
+- Optional network LLM endpoints you configure explicitly in `config.yaml`
+
+### Lower-risk local paths
+
+- Routing through each host's own official CLI
+- Loopback Ollama or other self-hosted inference on `127.0.0.1`
+
+### Higher-risk paths
+
+- Cross-provider routing of consumer subscription OAuth (especially Claude)
+- The deprecated remote HTTP server (`threnody serve`) — shared routing surface
+
+Re-do the network and policy review whenever you change hosts, providers, or
+expose Threnody beyond local stdio.
+
+## Honest limitations
+
+These are the points a security or platform reviewer should hear plainly:
+
+- Threnody orchestrates tools that can execute arbitrary code with the
+  permissions of the current user
+- Routing policy reduces provider-policy risk; it cannot change a provider's
+  underlying trust model or terms of service
+- Documentation of risk tiers helps planning; it does not make an unsafe routing
+  pattern safe
+- Realistic enforcement is usually account suspension, rate limits, or feature
+  blocks — not litigation — but provider responses are discretionary
 
 ## Operator responsibilities
 
@@ -160,6 +213,15 @@ access for customers:
 - Get qualified legal review
 - Use provider API keys and commercial contracts, not consumer subscription OAuth
 - Do not imply endorsement by any AI provider
+
+## Third-party CLI agents
+
+Vulnerabilities, outages, and terms-of-service changes in third-party CLIs
+(Claude Code, Codex, Gemini CLI, Copilot, Cursor, etc.) are **out of scope**
+for Threnody security reports. Report those to the respective vendor.
+
+Threnody's responsibility is limited to how it invokes installed CLIs, stores
+local state, and exposes MCP tools on the operator's machine.
 
 ## Related documentation
 

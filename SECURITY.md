@@ -30,6 +30,19 @@ Never commit credentials to this repository or place credentials in
 `config.example.yaml`. Runtime tokens belong in provider-native credential
 stores or an untracked local `config.yaml`.
 
+## Out of scope
+
+The following are **not** Threnody vulnerabilities — report them to the vendor:
+
+- Third-party CLI agents (Claude Code, Codex, Gemini CLI, Copilot, Cursor,
+  Junie, OpenCode, etc.)
+- Provider account suspension, quota enforcement, or terms-of-service disputes
+- Misconfigured provider credentials on the researcher's own machine
+- Social engineering or phishing against provider login flows
+
+See [docs/LEGAL.md](docs/LEGAL.md) for provider-policy risk tiers and routing
+guidance.
+
 ## Deployment notes
 
 ### MCP stdio trust model

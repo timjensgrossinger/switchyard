@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="Threnody — multi-agent MCP orchestrator and LLM router" width="100%">
+</p>
+
 <h1 align="center">Threnody</h1>
 <h3 align="center">Multi-agent MCP orchestrator &amp; LLM router for AI coding CLIs — Copilot, Claude Code, Gemini, Cursor, Codex, and more</h3>
 
@@ -41,6 +45,8 @@ Restart your shell, then connect from Claude Code, Copilot CLI, Gemini, Codex, C
 
 **Provider terms:** Threnody is not affiliated with or endorsed by any AI provider. You are responsible for complying with each provider's terms of service. Provider terms, policies, and enforcement may change at any time without notice. See [docs/LEGAL.md](docs/LEGAL.md) before routing across subscriptions.
 
+Docs: [limitations](docs/RELEASE_LIMITATIONS.md) · [legal](docs/LEGAL.md) · [architecture](docs/ARCHITECTURE.md)
+
 ---
 
 ## What is Threnody?
@@ -58,6 +64,23 @@ Search terms that describe the same project: **model routing**, **agent router**
 | **Save money** | Route simple edits to free/low-tier models. Reserve opus/sonnet-class models for work that needs reasoning. |
 | **Use what you have** | Works with GitHub Copilot, Claude Code, Gemini CLI, Codex, Cursor, Junie, OpenCode, Aider, Amazon Q/Kiro, and more — pick the cheapest authenticated CLI per task. |
 | **See everything** | Every wave shows agent, tier, model, provider, and target files before and after execution. |
+
+---
+
+## Who this is for
+
+- Developers who already pay for one or more AI CLI subscriptions and want cheaper models for simple work
+- Teams routing across Copilot, Claude Code, Gemini, Codex, or Cursor from a single MCP host
+- Operators who want local-first routing, explicit provider diagnostics, and approval-gated learned agents
+- Anyone who wants credentials to stay in provider-native stores — Threnody does not manage your API keys
+
+## Who this is not for
+
+- A single chat assistant for casual coding questions — one CLI agent is enough; Threnody adds orchestration overhead
+- A hosted SaaS with a support SLA — solo open-source project; GitHub issues are how support happens
+- Compliance-certified agent orchestration — Threnody documents routing risk tiers; it does not ship audit-grade compliance bundles or regulatory certifications
+- Non-coding LLM workflows (research, writing, data pipelines) — Threnody wraps CLI coding agents specifically
+- Anyone who needs Threnody to guarantee provider ToS compliance — your deployment posture depends on which CLIs, subscriptions, and routing patterns you enable
 
 ---
 
@@ -87,6 +110,25 @@ threnody inspect approvals approve 12 --project . --operator you
 2. **Threnody scores complexity** → low / medium / high tier (no extra LLM call on the hot path).
 3. **Discovery picks the cheapest** authenticated provider for that tier (excludes the caller to prevent recursion).
 4. **Complex tasks decompose** into waves — independent subtasks run in parallel, dependents wait for prior waves.
+
+### What leaves your machine
+
+By default, Threnody is local-first:
+
+- Routing state, telemetry, and caches stay in local SQLite (`~/.local/lib/threnody/`)
+- The MCP server talks to your host shell over stdio — no Threnody-hosted control plane
+- Outbound traffic comes from the provider CLIs you invoke (Anthropic, OpenAI, GitHub, Google, etc.)
+
+If you route to a network LLM endpoint or enable the deprecated remote HTTP server, re-do the network review. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/LEGAL.md](docs/LEGAL.md).
+
+### Honest limitations
+
+- Threnody orchestrates tools that can execute arbitrary code with your user permissions
+- Provider risk is real — routing policy reduces it, but cannot change a provider's underlying trust model or terms
+- Cost rank is a routing hint, not a bill estimate
+- Realistic enforcement outcome is account suspension or rate limits, not necessarily litigation
+
+Full list: [docs/RELEASE_LIMITATIONS.md](docs/RELEASE_LIMITATIONS.md)
 
 ---
 
@@ -218,13 +260,16 @@ Threnody is an independent open-source project. It is not affiliated with,
 endorsed by, or sponsored by Anthropic, OpenAI, GitHub, Google, Cursor,
 JetBrains, or any other provider named in this repository.
 
-- Use at your own risk and in compliance with each provider's terms of service
-- Provider terms, policies, and enforcement may change at any time without
-  notice; Threnody cannot guarantee continued compatibility with any provider's
-  rules
-- Cross-routing Claude Pro/Max subscription OAuth from non-Claude hosts carries
-  the highest provider-policy risk; see [docs/LEGAL.md](docs/LEGAL.md)
-- Claude Code → Claude Code routing is blocked by default; explicit opt-in only
+Threnody is provided **"AS IS"** under the [Apache License 2.0](LICENSE) (no
+warranty; limitation of liability). You are solely responsible for determining
+whether your routing patterns comply with each provider's current terms.
+
+**Highest-risk pattern:** cross-routing Claude Pro/Max subscription OAuth from
+a non-Claude host to `claude -p`. **Blocked by default:** Claude Code → Claude
+Code subprocess routing on the same subscription.
+
+Full risk tiers, per-provider notes, and team guidance:
+[docs/LEGAL.md](docs/LEGAL.md)
 
 ## License
 

@@ -13,11 +13,28 @@
 - Junie defaults to medium-only routing.
 - Windsurf is detection-only.
 
+## Honest limitations
+
+Plain-language constraints that matter in practice:
+
+- Threnody orchestrates CLIs that can execute arbitrary code with your user
+  permissions — it is not a sandbox
+- Provider risk is real; routing policy reduces it but cannot change a
+  provider's underlying trust model
+- Cost rank is a routing hint, not a bill estimate
+- Documentation and risk tiers are planning aids, not certifications or legal
+  opinions
+- Solo open-source project — no vendor SLA; GitHub issues are the support channel
+
 ## Comparison Boundaries
 
 Threnody is not positioned as a replacement for a specific AI coding tool.
 It is a local routing and orchestration layer for operators who already use one
-or more AI CLIs. Comparisons should be limited to observable behavior:
+or more AI CLIs. Do not compare against audit-grade compliance orchestrators on
+features Threnody does not ship (HMAC audit chains, regulatory export bundles,
+signed agent cards, etc.).
+
+Comparisons should be limited to observable behavior:
 
 - Local-first MCP routing across installed CLIs.
 - Cost-aware tier selection.
