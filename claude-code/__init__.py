@@ -1,0 +1,1 @@
+"""Switchyard Claude Code version."""

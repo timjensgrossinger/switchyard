@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Switchyard  AI CLI router and MCP orchestrator">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="50%" stop-color="#161b22"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#f0883e"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="320" fill="url(#bg)"/>
+  <!-- track lines -->
+  <path d="M80 200 H1120" stroke="#30363d" stroke-width="2"/>
+  <path d="M80 240 H1120" stroke="#30363d" stroke-width="2"/>
+  <path d="M80 160 H1120" stroke="#30363d" stroke-width="2"/>
+  <!-- switches -->
+  <circle cx="300" cy="200" r="8" fill="#58a6ff" filter="url(#glow)"/>
+  <circle cx="600" cy="160" r="8" fill="#f0883e" filter="url(#glow)"/>
+  <circle cx="900" cy="240" r="8" fill="#3fb950" filter="url(#glow)"/>
+  <path d="M300 200 L600 160" stroke="url(#accent)" stroke-width="2" opacity="0.7"/>
+  <path d="M600 160 L900 240" stroke="url(#accent)" stroke-width="2" opacity="0.7"/>
+  <!-- title -->
+  <text x="600" y="110" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="52" font-weight="700" fill="#f0f6fc">Switchyard</text>
+  <text x="600" y="150" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="20" fill="#8b949e">AI CLI router &amp; MCP orchestrator</text>
+  <text x="600" y="290" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="14" fill="#6e7681">Route coding tasks across Copilot · Claude Code · Gemini · Cursor · Codex · and more</text>
+</svg>

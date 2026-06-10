@@ -1,0 +1,52 @@
+name: Routing Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  routing-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Run routing eval
+        id: eval
+        run: |
+          set -o pipefail
+          SWITCHYARD_TEST_MODE=1 python3 -m shared.routing_eval 2>&1 | tee eval_output.txt
+
+      - name: Generate markdown report
+        if: always()
+        run: |
+          SWITCHYARD_TEST_MODE=1 python3 -m shared.routing_eval --report markdown > eval_report.md 2>/dev/null || true
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-eval-report
+          path: |
+            eval_output.txt
+            eval_report.md
+
+      - name: Check regression vs baseline (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if git log --oneline -10 | grep -q "eval baseline"; then
+            echo "Baseline update commit found -- skipping regression check"
+          else
+            SWITCHYARD_TEST_MODE=1 python3 -m shared.routing_eval
+          fi

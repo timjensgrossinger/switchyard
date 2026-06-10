@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-low-10",
+  "category": "low_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Write boilerplate for a small cleanup helper.",
+  "expected": {
+    "tier": "low",
+    "score_min": 0.14,
+    "score_max": 0.16,
+    "urgency_expected": false,
+    "fanout_expected": "favor_parallel"
+  }
+}

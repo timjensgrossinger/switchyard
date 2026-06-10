@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-med-06",
+  "category": "medium_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Migrate config_loader.py settings.py validator.py to a shared authentication-aware configuration flow with middleware checks and explicit error handling.",
+  "expected": {
+    "tier": "medium",
+    "score_min": 0.69,
+    "score_max": 0.77,
+    "urgency_expected": false,
+    "fanout_expected": "favor_parallel"
+  }
+}

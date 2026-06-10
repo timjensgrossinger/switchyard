@@ -1,0 +1,1 @@
+"""Switchyard shared core."""

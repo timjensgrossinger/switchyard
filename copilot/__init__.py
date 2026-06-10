@@ -1,0 +1,1 @@
+"""Switchyard Copilot CLI version."""

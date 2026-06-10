@@ -1,0 +1,80 @@
+# Safe example configuration for Switchyard.
+# Copy to ~/.local/lib/switchyard/config.yaml after installation and customize.
+# Do not add API keys, bearer tokens, passwords, or machine-specific secrets.
+
+parallelism:
+  enabled: true
+  max_workers: 0
+
+swarm:
+  max_agents: 12
+
+budgets:
+  default_hard_cap_tokens: 1000
+  default_soft_warning_pct: 0.8
+
+cache:
+  ttl_hours: 24
+  backup_keep: 3
+
+providers:
+  effort_defaults:
+    claude-code:
+      low: low
+      medium: medium
+      high: max
+    codex:
+      low: minimal
+      medium: medium
+      high: xhigh
+  timeouts:
+    low: 120
+    medium: 120
+    high: 120
+
+routing_policy:
+  # default | strict | advisory | custom
+  mode: default
+  shells: {}
+
+routing_exceptions:
+  # Built-in defaults already cover Markdown and known AI instruction files.
+  filetypes: []
+  paths: []
+
+verify_gate:
+  enabled: false
+  mode: warn
+  signals:
+    lint:
+      command: auto
+      required: false
+      timeout_seconds: 120
+    types:
+      command: auto
+      required: true
+      timeout_seconds: 120
+    tests:
+      command: auto
+      required: true
+      timeout_seconds: 300
+
+surgical_edits:
+  max_file_bytes: 32768
+  blocks_max_file_bytes: 131072
+  length_ratio_min: 0.5
+
+resilience:
+  retry:
+    attempts: 3
+    base_delay_s: 0.5
+    max_delay_s: 8.0
+    jitter_ratio: 0.3
+  circuit_breaker:
+    failure_threshold: 3
+    open_seconds: 120
+    quota_open_seconds: 1800
+    auth_open_seconds: 600
+  auth_probe:
+    ttl_seconds: 600
+    enabled: true

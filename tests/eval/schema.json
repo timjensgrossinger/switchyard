@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/timjensgrossinger/switchyard/tests/eval/schema.json",
+  "title": "RoutingEvalFixture",
+  "description": "Schema for Switchyard routing correctness evaluation fixtures.",
+  "type": "object",
+  "required": ["id", "category", "tags", "prompt", "expected"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique fixture identifier, kebab-case.",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "category": {
+      "type": "string",
+      "description": "Fixture category, matches the subdirectory name.",
+      "enum": ["low_tier", "medium_tier", "high_tier", "urgency", "fanout"]
+    },
+    "tags": {
+      "type": "array",
+      "description": "Free-form classification tags for filtering and reporting.",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "prompt": {
+      "type": "string",
+      "description": "The task description routed through route_task().",
+      "minLength": 5
+    },
+    "expected": {
+      "type": "object",
+      "description": "Expected routing outcome.",
+      "required": ["tier", "score_min", "score_max"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "description": "Expected RoutingDecision.tier value."
+        },
+        "score_min": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Minimum acceptable score (inclusive)."
+        },
+        "score_max": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Maximum acceptable score (inclusive)."
+        },
+        "urgency_expected": {
+          "type": "boolean",
+          "description": "True if urgency_score > 0 is expected.",
+          "default": false
+        },
+        "fanout_expected": {
+          "type": "string",
+          "enum": ["none", "favor_parallel"],
+          "description": "Expected fanout hint derived from RoutingDecision.agents.",
+          "default": "none"
+        }
+      }
+    }
+  }
+}

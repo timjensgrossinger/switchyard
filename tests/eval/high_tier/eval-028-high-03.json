@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-high-03",
+  "category": "high_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Architect a multi-host database upgrade plan with rollback checkpoints across primary and replica nodes.",
+  "expected": {
+    "tier": "high",
+    "score_min": 0.85,
+    "score_max": 0.95,
+    "urgency_expected": false,
+    "fanout_expected": "none"
+  }
+}
