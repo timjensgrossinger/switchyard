@@ -47,3 +47,23 @@ def test_build_heuristic_plan_single_file_uses_low_tier() -> None:
     )
     assert len(payload["subtasks"]) == 1
     assert payload["subtasks"][0]["tier"] == "low"
+
+
+def test_extract_task_file_entries_expands_numbered_fanout() -> None:
+    task = "Create 4 greet.py numbered in sandbox/swarm-demo-v5 that prints Hello, world!"
+    entries = extract_task_file_entries(task)
+    paths = [path for path, _ in entries]
+    assert paths == [
+        "sandbox/swarm-demo-v5/greet1.py",
+        "sandbox/swarm-demo-v5/greet2.py",
+        "sandbox/swarm-demo-v5/greet3.py",
+        "sandbox/swarm-demo-v5/greet4.py",
+    ]
+
+
+def test_build_heuristic_plan_numbered_fanout_parallel_wave() -> None:
+    task = "Create 4 greet.py numbered in sandbox/swarm-demo-v5 that prints Hello, world!"
+    payload = build_heuristic_plan_payload(task, default_tier="medium")
+    assert len(payload["subtasks"]) == 4
+    assert payload["topology"] == "linear"
+    assert payload["strategy"] == "parallel"

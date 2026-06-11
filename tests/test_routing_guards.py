@@ -550,7 +550,8 @@ def test_plan_task_issues_routed_plan_guard(monkeypatch: pytest.MonkeyPatch) -> 
         registry = SelectionRegistry(provider="Claude Code", model="claude-sonnet-4.6")
         fake_plan = SimpleNamespace(total_agents=2, waves=[[1]])
         planner = SimpleNamespace(
-            plan=lambda _task: fake_plan,
+            plan=lambda _task, **_kwargs: fake_plan,
+            plan_heuristic=lambda _task, **_kwargs: fake_plan,
             plan_to_dict=lambda _plan: {
                 "analysis": "test",
                 "subtasks": [{"id": 1, "description": "Update shared/db.py", "tier": "medium", "model": "claude-sonnet-4.6", "depends_on": []}],
@@ -577,6 +578,117 @@ def test_plan_task_issues_routed_plan_guard(monkeypatch: pytest.MonkeyPatch) -> 
         assert result["routing_guard"]["mode"] == ROUTING_GUARD_MODE_ROUTED_PLAN
         assert validated["valid"] is False
         assert "multi-file routed plan" in validated["reason"]
+
+
+def test_plan_task_guard_includes_subtask_target_file_not_in_task_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        cfg, db = _prepare_db(td)
+        monkeypatch.chdir(ROOT)
+        registry = SelectionRegistry(provider="Claude Code", model="claude-sonnet-4.6")
+        fake_plan = SimpleNamespace(total_agents=1, waves=[[1]])
+        planner = SimpleNamespace(
+            plan=lambda _task, **_kwargs: fake_plan,
+            plan_heuristic=lambda _task, **_kwargs: fake_plan,
+            plan_to_dict=lambda _plan: {
+                "analysis": "test",
+                "subtasks": [
+                    {
+                        "id": 1,
+                        "description": "create greet module",
+                        "tier": "low",
+                        "model": "composer-2.5-fast",
+                        "depends_on": [],
+                        "target_file": "sandbox/swarm-demo/greet1.py",
+                    }
+                ],
+                "waves": [[1]],
+                "strategy": "parallel",
+                "total_agents": 1,
+            },
+        )
+
+        monkeypatch.setattr(mcp_server, "_ensure_init", lambda: _stub_init(cfg, db, planner=planner))
+        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda: registry)
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "claude-code")
+
+        result = mcp_server.handle_plan_task({
+            "task": "create numbered greet scripts in sandbox",
+            "cwd": str(ROOT),
+        })
+        guard = result.get("routing_guard")
+        assert isinstance(guard, dict)
+        assert guard.get("mode") == ROUTING_GUARD_MODE_ROUTED_PLAN
+        file_hints = guard.get("file_hints") or []
+        assert any("greet1.py" in str(hint) for hint in file_hints)
+
+        validated = mcp_server.handle_validate_routing_guard({
+            "cwd": str(ROOT),
+            "target_file": str(ROOT / "sandbox" / "swarm-demo" / "greet1.py"),
+            "tool_name": "Write",
+        })
+        assert validated["valid"] is False
+
+
+def test_route_task_preserves_routed_plan_guard_during_active_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        cfg, db = _prepare_db(td)
+        monkeypatch.chdir(ROOT)
+        registry = SelectionRegistry(provider="Claude Code", model="claude-sonnet-4.6")
+        fake_plan = SimpleNamespace(total_agents=1, waves=[[1]])
+        planner = SimpleNamespace(
+            plan=lambda _task, **_kwargs: fake_plan,
+            plan_heuristic=lambda _task, **_kwargs: fake_plan,
+            plan_to_dict=lambda _plan: {
+                "subtasks": [
+                    {
+                        "id": 1,
+                        "description": "edit shared/db.py",
+                        "tier": "medium",
+                        "depends_on": [],
+                        "target_file": "shared/db.py",
+                    }
+                ],
+                "waves": [[1]],
+                "total_agents": 1,
+            },
+        )
+        router = SimpleNamespace(
+            classify=lambda _task: SimpleNamespace(
+                tier="low",
+                score=0.16,
+                reason="low",
+                agents=1,
+                override=False,
+            )
+        )
+
+        monkeypatch.setattr(
+            mcp_server,
+            "_ensure_init",
+            lambda: _stub_init(cfg, db, router=router, planner=planner),
+        )
+        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda: registry)
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "claude-code")
+
+        mcp_server.handle_plan_task({"task": "update shared/db.py", "cwd": str(ROOT)})
+        db.persist_swarm_run(
+            {
+                "swarm_id": "plan-handoff",
+                "status": "awaiting_host_execution",
+                "requested_agents": 1,
+                "effective_agents": 1,
+            }
+        )
+
+        routed = mcp_server.handle_route_task({"task": "quick follow-up", "cwd": str(ROOT)})
+        assert routed["execution_hint"].get("active_handoff") is True
+        guard = routed.get("routing_guard")
+        assert isinstance(guard, dict)
+        assert guard.get("mode") == ROUTING_GUARD_MODE_ROUTED_PLAN
 
 
 def test_route_task_uses_explicit_cwd_for_guard_scope(monkeypatch: pytest.MonkeyPatch) -> None:

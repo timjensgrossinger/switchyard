@@ -24,6 +24,70 @@ _CLAUSE_SPLIT = re.compile(
 )
 _INTEGRATION_STEMS = frozenset({"main", "cli", "app", "__init__", "index"})
 
+_WORD_NUMBERS: dict[str, int] = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+_COUNTED_FANOUT = re.compile(
+    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:numbered\s+)?"
+    r"([A-Za-z0-9_.-]+)\.(py|ts|tsx|js|jsx|go|rs|java|kt|rb|cs|yaml|yml|json|toml|md)\b"
+    r"(?:\s+numbered)?",
+    re.IGNORECASE,
+)
+_NUMBERED_BEFORE_FILE = re.compile(
+    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+numbered\s+"
+    r"([A-Za-z0-9_.-]+)\.(py|ts|tsx|js|jsx|go|rs|java|kt|rb|cs|yaml|yml|json|toml|md)\b",
+    re.IGNORECASE,
+)
+_DIR_PREFIX = re.compile(
+    r"(?:\bin\s+|(?:under|into)\s+)([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)/?",
+    re.IGNORECASE,
+)
+
+
+def _parse_count_token(raw: str) -> int | None:
+    token = raw.strip().lower()
+    if token.isdigit():
+        value = int(token)
+        return value if 1 <= value <= 32 else None
+    return _WORD_NUMBERS.get(token)
+
+
+def _directory_prefix_from_task(task: str) -> str:
+    match = _DIR_PREFIX.search(task)
+    if not match:
+        return ""
+    return _normalize_path(match.group(1)).rstrip("/")
+
+
+def _expand_numbered_fanout(task: str) -> list[tuple[str, str]] | None:
+    """Expand 'Create 4 greet.py numbered' into greet1.py … greet4.py."""
+    match = _NUMBERED_BEFORE_FILE.search(task) or _COUNTED_FANOUT.search(task)
+    if not match:
+        return None
+    count = _parse_count_token(match.group(1))
+    if count is None:
+        return None
+    stem = match.group(2)
+    ext = match.group(3)
+    prefix = _directory_prefix_from_task(task)
+    base_hint = task.strip()
+    expanded: list[tuple[str, str]] = []
+    for index in range(1, count + 1):
+        filename = f"{stem}{index}.{ext}"
+        path = f"{prefix}/{filename}" if prefix else filename
+        expanded.append((path, f"Create {path} ({index} of {count}): {base_hint}"))
+    return expanded
+
 
 def _normalize_path(path: str) -> str:
     return path.strip().replace("\\", "/")
@@ -60,6 +124,13 @@ def extract_task_file_entries(task: str) -> list[tuple[str, str]]:
             return
         seen.add(key)
         ordered.append((normalized, hint.strip()))
+
+    fanout = _expand_numbered_fanout(task)
+    if fanout:
+        for path, hint in fanout:
+            _add(path, hint)
+        hints = _description_hints_by_path(task, [path for path, _ in ordered])
+        return [(path, hints.get(path.lower(), hint)) for path, hint in fanout]
 
     for ref in extract_references(task):
         _add(ref.path)

@@ -31,7 +31,7 @@ def test_claude_default_instructions_are_advisory() -> None:
     assert "All other filetypes remain routed by default" in body
     assert "host_spawn_waves" in body
     assert "HostNativeRequired" in body
-    assert "prefer direct edits or the host subagent tool" in body
+    assert "prefer direct edits or the host subagent tool" in body or "without an active host_spawn_waves handoff" in body
     assert "Agent transparency tables are optional" in body
     assert "PreToolUse" not in body
     assert "validate_routing_guard" not in body

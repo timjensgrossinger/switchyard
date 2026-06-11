@@ -74,7 +74,7 @@ from shared.db import (
     ROUTING_GUARD_MODE_ROUTED_PLAN,
     ROUTING_GUARD_TTL_SECONDS,
 )
-from shared.eval import set_background_loop
+from shared.eval import set_background_loop, run_warm_path_background_tasks
 from shared.model_catalog import ModelCatalog
 from shared.memory import (
     MemoryNotFoundError,
@@ -116,6 +116,7 @@ from shared.discovery import (
 )
 from shared.config import normalize_caller_id, normalize_routing_policy_shell_id
 from shared.host_spawn import (
+    HOST_EXECUTION_CONTRACT,
     host_native_model_for_tier,
     COMPLIANCE_WARNING,
     build_host_native_required_response,
@@ -126,6 +127,12 @@ from shared.host_spawn import (
     validate_execute_subtask_delegation,
     would_self_delegate,
     _caller_is_host,
+)
+from shared.host_learning import (
+    ingest_host_wave,
+    inspect_host_swarm,
+    plan_run_id,
+    register_host_run_handoff,
 )
 from shared.quota import ProviderQuotaService
 from shared.adapters import ProviderCapability
@@ -174,6 +181,7 @@ _orchestrator: Orchestrator | None = None
 _model_catalog: ModelCatalog | None = None
 _shutdown_registered: bool = False
 _health_probe_thread: threading.Thread | None = None
+_warm_path_thread: threading.Thread | None = None
 _client_name: str | None = None  # set from MCP initialize handshake
 _bg_loop: asyncio.AbstractEventLoop | None = None
 _bg_loop_thread: threading.Thread | None = None
@@ -487,6 +495,18 @@ def _run_health_probe_loop() -> None:
             log.debug("health probe loop error", exc_info=True)
 
 
+def _run_warm_path_loop() -> None:
+    """Daemon: periodically process learning_queue and warm-path eval backlog."""
+    while True:
+        try:
+            time.sleep(45)
+            if _db is None:
+                continue
+            run_warm_path_background_tasks(_db)
+        except Exception:
+            log.debug("warm path background loop error", exc_info=True)
+
+
 def _log_model_catalog_refresh(future: Future) -> None:
     try:
         result = future.result()
@@ -609,7 +629,7 @@ def _ensure_init() -> tuple[TGsConfig, Database, TaskRouter, Planner, Orchestrat
             _orchestrator = orchestrator
             _model_catalog = model_catalog
 
-            global _shutdown_registered, _health_probe_thread
+            global _shutdown_registered, _health_probe_thread, _warm_path_thread
             if _health_probe_thread is None or not _health_probe_thread.is_alive():
                 _health_probe_thread = threading.Thread(
                     target=_run_health_probe_loop,
@@ -618,6 +638,14 @@ def _ensure_init() -> tuple[TGsConfig, Database, TaskRouter, Planner, Orchestrat
                 )
                 _health_probe_thread.start()
                 log.debug("health probe loop started")
+            if _warm_path_thread is None or not _warm_path_thread.is_alive():
+                _warm_path_thread = threading.Thread(
+                    target=_run_warm_path_loop,
+                    name="tgs-warm-path",
+                    daemon=True,
+                )
+                _warm_path_thread.start()
+                log.debug("warm path background loop started")
 
             if not _shutdown_registered:
                 import atexit as _atexit
@@ -1304,6 +1332,80 @@ TOOLS = [
         },
     },
     {
+        "name": "report_host_wave",
+        "description": (
+            "Report completion of one host-native swarm/plan wave. "
+            "Call after spawning and finishing each host_spawn_waves wave. "
+            "Set terminal=true on the last wave with outcome=accepted|revised|reworked|rejected."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swarm_id": {"type": "string", "description": "Swarm or plan run id (host_run_id from handoff)"},
+                "run_id": {"type": "string", "description": "Alias for swarm_id"},
+                "plan_run_id": {"type": "string", "description": "Alias for plan-only runs"},
+                "wave": {"type": "integer", "minimum": 1},
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "spawn_id": {"type": "string"},
+                            "id": {"type": "string"},
+                            "task_id": {"type": "string"},
+                            "success": {"type": "boolean"},
+                            "touched_files": {"type": "array", "items": {"type": "string"}},
+                            "output_excerpt": {"type": "string"},
+                            "rework_detected": {"type": "boolean"},
+                            "duration_ms": {"type": "integer"},
+                        },
+                    },
+                },
+                "terminal": {"type": "boolean", "default": False},
+                "outcome": {
+                    "type": "string",
+                    "enum": ["accepted", "revised", "reworked", "rejected"],
+                },
+                "workspace_root": {"type": "string"},
+            },
+            "required": ["wave", "agents"],
+        },
+    },
+    {
+        "name": "report_host_swarm_complete",
+        "description": (
+            "Terminal shortcut for host-native runs — equivalent to report_host_wave "
+            "with terminal=true. Requires outcome."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swarm_id": {"type": "string"},
+                "run_id": {"type": "string"},
+                "wave": {"type": "integer", "minimum": 1},
+                "agents": {"type": "array"},
+                "outcome": {
+                    "type": "string",
+                    "enum": ["accepted", "revised", "reworked", "rejected"],
+                },
+                "workspace_root": {"type": "string"},
+            },
+            "required": ["wave", "agents", "outcome"],
+        },
+    },
+    {
+        "name": "inspect_swarm",
+        "description": "Return compact swarm run summary from SQLite (status, progress, host metadata).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swarm_id": {"type": "string"},
+                "run_id": {"type": "string"},
+            },
+            "required": ["swarm_id"],
+        },
+    },
+    {
         "name": "apply_preview",
         "description": (
             "Approve or deny a pending outside-workspace file write preview "
@@ -1835,6 +1937,42 @@ def _planner_plan_for_caller(
     ), False
 
 
+def _persist_host_plan_run(
+    db: Database,
+    *,
+    run_id: str,
+    task: str,
+    payload: Mapping[str, object],
+    workspace_root: str | None,
+) -> None:
+    waves = payload.get("host_spawn_waves")
+    if not isinstance(waves, list) or not waves:
+        return
+    subtasks = payload.get("subtasks")
+    agent_count = len(subtasks) if isinstance(subtasks, list) else sum(
+        len(w.get("agents", []))
+        for w in waves
+        if isinstance(w, dict) and isinstance(w.get("agents"), list)
+    )
+    try:
+        db.persist_swarm_run(
+            {
+                "swarm_id": run_id,
+                "task_hash": hashlib.sha256(task.encode()).hexdigest()[:16],
+                "status": "awaiting_host_execution",
+                "requested_agents": agent_count,
+                "effective_agents": agent_count,
+                "progress_counters": {"host_waves_total": len(waves)},
+                "topology": str(payload.get("topology") or "linear"),
+                "round": 0,
+                "resumable": False,
+                "resume_status": "awaiting_host_execution",
+            }
+        )
+    except Exception:
+        log.debug("host plan run persist failed for %s", run_id, exc_info=True)
+
+
 def handle_plan_task(args: dict) -> dict:
     global _config, _db, _router, _planner, _orchestrator
     # Respect injected planner/config/db during tests; this handler does not use router/orchestrator.
@@ -1844,6 +1982,8 @@ def handle_plan_task(args: dict) -> dict:
         config, db, router, planner, orchestrator = _config, _db, _router, _planner, _orchestrator
     caller = _resolve_caller()
     task = args.get("task", "")
+    workspace_root = args.get("cwd") if isinstance(args.get("cwd"), str) else None
+    host_run_id = plan_run_id(task) if normalize_caller_id(caller) in HOST_PROVIDER_NAMES else None
     cached = db.cache_get(task)
     if cached is not None:
         result_str, model = cached
@@ -1851,17 +1991,33 @@ def handle_plan_task(args: dict) -> dict:
             result = _attach_models_to_subtasks(json.loads(result_str))
             result["cache_hit"] = True
             result["tip"] = "Cache hit — skipped planner call, zero tokens used."
-            guard = _issue_routing_guard(
+            _attach_host_spawn_metadata(
+                result,
+                config=config,
+                caller=caller,
+                task=task,
+                db=db,
+                run_id=host_run_id,
+                workspace_root=workspace_root,
+            )
+            guard = _issue_host_handoff_routing_guard(
                 db,
                 caller=caller,
                 cwd=args.get("cwd"),
                 task=task,
                 source_tool="plan_task",
-                mode=ROUTING_GUARD_MODE_ROUTED_PLAN if _task_likely_writes_files(task) else None,
+                payload=result,
             )
             if guard is not None:
                 result["routing_guard"] = guard
-            _attach_host_spawn_metadata(result, config=config, caller=caller, task=task)
+            if host_run_id:
+                _persist_host_plan_run(
+                    db,
+                    run_id=host_run_id,
+                    task=task,
+                    payload=result,
+                    workspace_root=workspace_root,
+                )
             return result
         except (json.JSONDecodeError, TypeError):
             pass
@@ -1892,8 +2048,8 @@ def handle_plan_task(args: dict) -> dict:
             _low_model = _host_native_model_for_tier(config, caller, "low") or "low-tier host default"
             _sfi_hint = (
                 f"\n\nSubtasks with single_file_insertion=true ({len(_sfi_subtasks)} found): "
-                f"use the host Task tool with model='{_low_model}' (or direct edits) instead of execute_subtask — "
-                "host-native execution avoids subprocess billing."
+                f"spawn a host Task agent per subtask (model='{_low_model}') from host_spawn_waves — "
+                "do not use direct Write/Edit on planned target_files."
             )
         else:
             _sfi_hint = (
@@ -1912,17 +2068,33 @@ def handle_plan_task(args: dict) -> dict:
         "and wall time. After all waves, print a cost summary by tier."
         + _sfi_hint
     )
-    guard = _issue_routing_guard(
+    _attach_host_spawn_metadata(
+        result,
+        config=config,
+        caller=caller,
+        task=task,
+        db=db,
+        run_id=host_run_id,
+        workspace_root=workspace_root,
+    )
+    guard = _issue_host_handoff_routing_guard(
         db,
         caller=caller,
         cwd=args.get("cwd"),
         task=task,
         source_tool="plan_task",
-        mode=ROUTING_GUARD_MODE_ROUTED_PLAN if _task_likely_writes_files(task) else None,
+        payload=result,
     )
     if guard is not None:
         result["routing_guard"] = guard
-    _attach_host_spawn_metadata(result, config=config, caller=caller, task=task)
+    if host_run_id:
+        _persist_host_plan_run(
+            db,
+            run_id=host_run_id,
+            task=task,
+            payload=result,
+            workspace_root=workspace_root,
+        )
     cacheable_result = dict(result)
     cacheable_result.pop("routing_guard", None)
     db.cache_put(task, json.dumps(cacheable_result), "planner")
@@ -1946,17 +2118,12 @@ def handle_fleet_plan(args: dict) -> dict:
                         cached_result.get("plan") or {},
                     )
                 cached_result["cache_hit"] = True
-                guard = _issue_routing_guard(
-                    db,
+                _attach_host_spawn_metadata(
+                    cached_result.get("plan") or cached_result,
+                    config=config,
                     caller=caller,
-                    cwd=args.get("cwd"),
                     task=task,
-                    source_tool="fleet_plan",
-                    mode=ROUTING_GUARD_MODE_ROUTED_PLAN if _task_likely_writes_files(task) else None,
                 )
-                if guard is not None:
-                    cached_result["routing_guard"] = guard
-                _attach_host_spawn_metadata(cached_result.get("plan") or cached_result, config=config, caller=caller, task=task)
                 if isinstance(cached_result.get("fleet_waves"), list):
                     cached_result["fleet_waves"] = _enrich_fleet_waves_with_host_spawn(
                         cached_result["fleet_waves"],
@@ -1964,6 +2131,16 @@ def handle_fleet_plan(args: dict) -> dict:
                         config=config,
                         caller=caller,
                     )
+                guard = _issue_host_handoff_routing_guard(
+                    db,
+                    caller=caller,
+                    cwd=args.get("cwd"),
+                    task=task,
+                    source_tool="fleet_plan",
+                    payload=cached_result.get("plan") or cached_result,
+                )
+                if guard is not None:
+                    cached_result["routing_guard"] = guard
                 return cached_result
             if "subtasks" in cached_result:
                 cached_result = _attach_models_to_subtasks(cached_result)
@@ -1983,24 +2160,16 @@ def handle_fleet_plan(args: dict) -> dict:
                     config=config,
                     caller=caller,
                 )
-                guard = _issue_routing_guard(
+                guard = _issue_host_handoff_routing_guard(
                     db,
                     caller=caller,
                     cwd=args.get("cwd"),
                     task=task,
                     source_tool="fleet_plan",
-                    mode=ROUTING_GUARD_MODE_ROUTED_PLAN if _task_likely_writes_files(task) else None,
+                    payload=cached_result,
                 )
                 if guard is not None:
                     result["routing_guard"] = guard
-                _attach_host_spawn_metadata(result.get("plan") or result, config=config, caller=caller, task=task)
-                if isinstance(result.get("fleet_waves"), list):
-                    result["fleet_waves"] = _enrich_fleet_waves_with_host_spawn(
-                        result["fleet_waves"],
-                        result.get("plan") or result,
-                        config=config,
-                        caller=caller,
-                    )
                 return result
         except (json.JSONDecodeError, TypeError):
             pass
@@ -2042,17 +2211,16 @@ def handle_fleet_plan(args: dict) -> dict:
     }
     if used_heuristic:
         result["planner_host_execution_mode"] = "host_native"
-    guard = _issue_routing_guard(
+    guard = _issue_host_handoff_routing_guard(
         db,
         caller=caller,
         cwd=args.get("cwd"),
         task=task,
         source_tool="fleet_plan",
-        mode=ROUTING_GUARD_MODE_ROUTED_PLAN if _task_likely_writes_files(task) else None,
+        payload=plan_dict,
     )
     if guard is not None:
         result["routing_guard"] = guard
-    _attach_host_spawn_metadata(result.get("plan") or result, config=config, caller=caller, task=task)
     cacheable_result = dict(result)
     cacheable_result.pop("routing_guard", None)
     db.cache_put(task, json.dumps(cacheable_result), "planner")
@@ -2588,6 +2756,37 @@ def _routing_profile_for_caller(config: TGsConfig, caller: str | None) -> Any:
 
 
 
+def _register_host_handoff_if_ready(
+    payload: dict[str, object],
+    *,
+    db: Database | None,
+    run_id: str | None,
+    workspace_root: str | None = None,
+    topology: str | None = None,
+) -> None:
+    if db is None or not run_id:
+        return
+    waves = payload.get("host_spawn_waves")
+    if not isinstance(waves, list) or not waves:
+        return
+    subtasks = payload.get("subtasks")
+    planned = len(subtasks) if isinstance(subtasks, list) else 0
+    if planned <= 0:
+        for wave in waves:
+            if isinstance(wave, dict) and isinstance(wave.get("agents"), list):
+                planned += len(wave["agents"])
+    register_host_run_handoff(
+        db,
+        run_id=run_id,
+        host_spawn_waves=waves,
+        planned_subtasks=planned,
+        workspace_root=workspace_root,
+        project_id=workspace_root,
+        topology=topology or str(payload.get("topology") or "linear"),
+    )
+    payload["host_run_id"] = run_id
+
+
 def _attach_host_spawn_metadata(
     payload: dict[str, object],
     *,
@@ -2596,6 +2795,10 @@ def _attach_host_spawn_metadata(
     task: str | None = None,
     tier: str | None = None,
     execution_hint: dict[str, object] | None = None,
+    db: Database | None = None,
+    run_id: str | None = None,
+    workspace_root: str | None = None,
+    topology: str | None = None,
 ) -> None:
     """Attach host_spawn or host_spawn_waves for MCP host callers."""
     if normalize_caller_id(caller) not in HOST_PROVIDER_NAMES:
@@ -2613,6 +2816,14 @@ def _attach_host_spawn_metadata(
         )
         if waves:
             payload["host_spawn_waves"] = waves
+            payload["host_execution_contract"] = HOST_EXECUTION_CONTRACT
+        _register_host_handoff_if_ready(
+            payload,
+            db=db,
+            run_id=run_id,
+            workspace_root=workspace_root,
+            topology=topology,
+        )
         return
     hint = execution_hint if isinstance(execution_hint, dict) else {}
     if hint.get("mode") != "host_native":
@@ -2714,7 +2925,7 @@ def _execute_swarm_host_native_response(
     plan_dict = _attach_models_to_subtasks(planner.plan_to_dict(plan))
     if used_heuristic:
         plan_dict["planner_host_execution_mode"] = "host_native"
-    _attach_host_spawn_metadata(plan_dict, config=config, caller=caller)
+    _attach_host_spawn_metadata(plan_dict, config=config, caller=caller, db=db, run_id=swarm_id, workspace_root=str(request_meta.get("workspace_root") or _active_workspace_root()), topology=str(request_meta.get("topology") or plan.topology or "linear"))
     host_waves = plan_dict.get("host_spawn_waves")
     if not isinstance(host_waves, list):
         host_waves = []
@@ -2741,6 +2952,14 @@ def _execute_swarm_host_native_response(
         "host_native_handoff",
         {"wave_count": len(host_waves), "task_chars": len(task_text)},
     )
+    guard = _issue_host_handoff_routing_guard(
+        db,
+        caller=caller,
+        cwd=request_meta.get("workspace_root") or _active_workspace_root(),
+        task=task_text,
+        source_tool="execute_swarm",
+        payload=plan_dict,
+    )
     swarm_result: dict[str, object] = {
         "swarm_id": swarm_id,
         "host_execution_mode": "host_native",
@@ -2756,9 +2975,16 @@ def _execute_swarm_host_native_response(
         },
         "execution_note": (
             "Execute each host_spawn_waves entry via the host Agent/Task tool; "
-            "do not call execute_subtask for same-host work."
+            "do not use direct Write/Edit on planned target_files — spawn one subagent per agent entry. "
+            "Do not call execute_subtask for same-host work. "
+            "After each wave completes, call report_host_wave(swarm_id, wave, agents[]); "
+            "on the final wave set terminal=true and outcome=accepted|revised|reworked|rejected."
         ),
     }
+    if guard is not None:
+        swarm_result["routing_guard"] = guard
+    if plan_dict.get("host_execution_contract"):
+        swarm_result["host_execution_contract"] = plan_dict["host_execution_contract"]
     if used_heuristic:
         swarm_result["planner_host_execution_mode"] = "host_native"
     return {
@@ -2806,6 +3032,131 @@ def _route_guard_mode_for_route(
     return ROUTING_GUARD_MODE_DIRECT
 
 
+def _file_hints_from_handoff_payload(
+    task: str,
+    cwd: str,
+    payload: Mapping[str, object],
+) -> list[str]:
+    base = Path(cwd).expanduser().resolve()
+    hints: set[str] = set(_extract_route_file_hints(task, cwd))
+
+    subtasks = payload.get("subtasks")
+    if isinstance(subtasks, list):
+        for subtask in subtasks:
+            if not isinstance(subtask, dict):
+                continue
+            for key in ("target_file", "file"):
+                raw = subtask.get(key)
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                try:
+                    normalized = normalize_target_path(raw.strip(), base)
+                    if is_within_repo(normalized, base):
+                        hints.add(str(normalized.resolve()))
+                except ValueError:
+                    log.debug("handoff file hint skipped for %r", raw, exc_info=True)
+
+    waves = payload.get("host_spawn_waves")
+    if isinstance(waves, list):
+        for wave in waves:
+            if not isinstance(wave, dict):
+                continue
+            agents = wave.get("agents")
+            if not isinstance(agents, list):
+                continue
+            for agent in agents:
+                if not isinstance(agent, dict):
+                    continue
+                target_files = agent.get("target_files")
+                if not isinstance(target_files, list):
+                    continue
+                for raw in target_files:
+                    if not isinstance(raw, str) or not raw.strip():
+                        continue
+                    try:
+                        normalized = normalize_target_path(raw.strip(), base)
+                        if is_within_repo(normalized, base):
+                            hints.add(str(normalized.resolve()))
+                    except ValueError:
+                        log.debug("handoff target_files hint skipped for %r", raw, exc_info=True)
+
+    return sorted(hints)
+
+
+def _handoff_payload_writes_files(payload: Mapping[str, object], task: str) -> bool:
+    if _task_likely_writes_files(task):
+        return True
+    subtasks = payload.get("subtasks")
+    if isinstance(subtasks, list):
+        for subtask in subtasks:
+            if isinstance(subtask, dict) and _subtask_likely_writes_files(subtask):
+                return True
+    waves = payload.get("host_spawn_waves")
+    if isinstance(waves, list):
+        for wave in waves:
+            if not isinstance(wave, dict):
+                continue
+            agents = wave.get("agents")
+            if not isinstance(agents, list):
+                continue
+            for agent in agents:
+                if isinstance(agent, dict) and agent.get("target_files"):
+                    return True
+    return False
+
+
+def _caller_has_active_host_handoff(db: Database, caller: str | None, cwd: object | None) -> bool:
+    existing = db.routing_guard_get(
+        caller=_normalize_route_text(caller) or "mcp",
+        cwd=_routing_guard_cwd(cwd),
+    )
+    if isinstance(existing, Mapping) and existing.get("mode") == ROUTING_GUARD_MODE_ROUTED_PLAN:
+        return True
+    try:
+        with db.conn() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM swarm_runs
+                WHERE status IN ('awaiting_host_execution', 'running')
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
+    except Exception:
+        log.debug("active host handoff lookup failed", exc_info=True)
+        return False
+
+
+def _issue_host_handoff_routing_guard(
+    db: Database,
+    *,
+    caller: str | None,
+    cwd: object | None,
+    task: str,
+    source_tool: str,
+    payload: Mapping[str, object],
+    tier: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, object] | None:
+    if not _handoff_payload_writes_files(payload, task):
+        return None
+    normalized_cwd = _routing_guard_cwd(cwd)
+    extra_hints = _file_hints_from_handoff_payload(task, normalized_cwd, payload)
+    return _issue_routing_guard(
+        db,
+        caller=caller,
+        cwd=cwd,
+        task=task,
+        source_tool=source_tool,
+        mode=ROUTING_GUARD_MODE_ROUTED_PLAN,
+        tier=tier,
+        provider=provider,
+        model=model,
+        file_hints=extra_hints,
+    )
+
+
 def _issue_routing_guard(
     db: Database,
     *,
@@ -2817,12 +3168,18 @@ def _issue_routing_guard(
     tier: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    file_hints: list[str] | None = None,
 ) -> dict[str, object] | None:
     if mode is None:
         return None
     normalized_caller = _normalize_route_text(caller) or "mcp"
     normalized_cwd = _routing_guard_cwd(cwd)
-    file_hints = _extract_route_file_hints(task, normalized_cwd)
+    extracted_hints = _extract_route_file_hints(task, normalized_cwd)
+    if file_hints:
+        file_hints_merged = sorted(set(extracted_hints) | set(file_hints))
+    else:
+        file_hints_merged = extracted_hints
+    file_hints = file_hints_merged
     if file_hints:
         config = _ensure_init()[0]
         non_exempt_hints: list[str] = []
@@ -3606,25 +3963,43 @@ def handle_route_task(args: dict) -> dict:
         })
         if isinstance(selection.get("quota_rationale"), list):
             result["quota_rationale"] = selection["quota_rationale"]
-    guard = _issue_routing_guard(
-        db,
-        caller=caller,
-        cwd=args.get("cwd"),
-        task=task,
-        source_tool="route_task",
-        mode=_route_guard_mode_for_route(
-            task=task,
-            tier=decision.tier,
+    active_handoff = _caller_has_active_host_handoff(db, caller, args.get("cwd"))
+    if active_handoff:
+        execution_hint = dict(execution_hint)
+        execution_hint["active_handoff"] = True
+        execution_hint["recommended_action"] = (
+            "Active host handoff in progress — spawn host_spawn_waves via Task/Agent; "
+            "do not use direct Write/Edit on planned target_files. "
+            "After each wave call report_host_wave."
+        )
+        execution_hint["host_native_method"] = "host_task"
+        result["execution_hint"] = execution_hint
+        existing_guard = db.routing_guard_get(
+            caller=_normalize_route_text(caller) or "mcp",
+            cwd=_routing_guard_cwd(args.get("cwd")),
+        )
+        if isinstance(existing_guard, Mapping):
+            result["routing_guard"] = dict(existing_guard)
+    else:
+        guard = _issue_routing_guard(
+            db,
             caller=caller,
-            execution_hint=execution_hint,
-            config=config,
-        ),
-        tier=decision.tier,
-        provider=result.get("provider") if isinstance(result.get("provider"), str) else None,
-        model=result.get("model") if isinstance(result.get("model"), str) else None,
-    )
-    if guard is not None:
-        result["routing_guard"] = guard
+            cwd=args.get("cwd"),
+            task=task,
+            source_tool="route_task",
+            mode=_route_guard_mode_for_route(
+                task=task,
+                tier=decision.tier,
+                caller=caller,
+                execution_hint=execution_hint,
+                config=config,
+            ),
+            tier=decision.tier,
+            provider=result.get("provider") if isinstance(result.get("provider"), str) else None,
+            model=result.get("model") if isinstance(result.get("model"), str) else None,
+        )
+        if guard is not None:
+            result["routing_guard"] = guard
     _attach_host_spawn_metadata(
         result,
         config=config,
@@ -4399,25 +4774,6 @@ def _swarm_runtime_constraints(
     return topology, max_agents
 
 
-def _task_from_routing_guard(
-    db: Database,
-    caller: str | None,
-    cwd: object | None,
-) -> str | None:
-    """Reuse the most recent route_task/plan task when execute_swarm omits task."""
-    normalized_caller = _normalize_route_text(caller) or "mcp"
-    guard = db.routing_guard_get(
-        caller=normalized_caller,
-        cwd=_routing_guard_cwd(cwd),
-    )
-    if not isinstance(guard, Mapping):
-        return None
-    task_text = guard.get("task_text")
-    if isinstance(task_text, str) and task_text.strip():
-        return task_text.strip()
-    return None
-
-
 def _coerce_execute_swarm_task_input(args: Mapping[str, object]) -> object | None:
     """Resolve execute_swarm task from task, task_text, or task_spec."""
     task_spec = args.get("task_spec")
@@ -4432,8 +4788,6 @@ def _coerce_execute_swarm_task_input(args: Mapping[str, object]) -> object | Non
 
     if isinstance(raw_task, str):
         stripped = raw_task.strip()
-        if not stripped:
-            return None
         if stripped.startswith("{") or stripped.startswith("["):
             try:
                 parsed = json.loads(stripped)
@@ -4880,19 +5234,6 @@ def handle_execute_swarm(args: dict) -> dict:
     """Implement the Phase 36 immediate execute_swarm contract (D-01..D-04)."""
     raw_task = _coerce_execute_swarm_task_input(args)
     if raw_task is None:
-        try:
-            _config_probe, db, *_ = _ensure_init()
-            raw_task = _task_from_routing_guard(
-                db,
-                _resolve_caller(),
-                args.get("workspace_root") or args.get("cwd"),
-            )
-        except Exception:
-            log.debug(
-                "execute_swarm routing-guard task fallback unavailable",
-                exc_info=True,
-            )
-    if raw_task is None:
         return {
             "error": "invalid_request",
             "details": "task (string), task_text, or task_spec is required",
@@ -5231,6 +5572,71 @@ def handle_execute_swarm(args: dict) -> dict:
     )
     
     return {"result": initial_response, "started": True}
+
+
+def _resolve_host_run_id(args: Mapping[str, object]) -> str:
+    for key in ("swarm_id", "run_id", "plan_run_id", "host_run_id"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise ValueError("swarm_id (or run_id / plan_run_id) is required")
+
+
+def handle_report_host_wave(args: dict) -> dict:
+    config, db, router, planner, orchestrator = _ensure_init()
+    try:
+        run_id = _resolve_host_run_id(args)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    wave_raw = args.get("wave")
+    try:
+        wave_index = int(wave_raw)
+    except (TypeError, ValueError):
+        return {"error": "wave must be an integer >= 1"}
+    agents_raw = args.get("agents")
+    if not isinstance(agents_raw, list) or not agents_raw:
+        return {"error": "agents must be a non-empty list"}
+    workspace_root = args.get("workspace_root")
+    if workspace_root is not None and not isinstance(workspace_root, str):
+        return {"error": "workspace_root must be a string when provided"}
+    terminal = bool(args.get("terminal", False))
+    outcome = args.get("outcome")
+    try:
+        return ingest_host_wave(
+            db,
+            run_id=run_id,
+            wave_index=wave_index,
+            agents=agents_raw,
+            workspace_root=workspace_root,
+            terminal=terminal,
+            outcome=str(outcome) if outcome is not None else None,
+            config=config,
+            router=router,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        log.warning("report_host_wave failed for %s", run_id, exc_info=True)
+        return {"error": "report_host_wave failed", "details": str(exc)}
+
+
+def handle_report_host_swarm_complete(args: dict) -> dict:
+    merged = dict(args)
+    merged["terminal"] = True
+    if merged.get("outcome") is None:
+        return {"error": "outcome is required for report_host_swarm_complete"}
+    return handle_report_host_wave(merged)
+
+
+def handle_inspect_swarm(args: dict) -> dict:
+    _, db, *_ = _ensure_init()
+    swarm_id = args.get("swarm_id") or args.get("run_id")
+    if not isinstance(swarm_id, str) or not swarm_id.strip():
+        return {"error": "swarm_id is required"}
+    summary = inspect_host_swarm(db, swarm_id.strip())
+    if summary is None:
+        return {"error": "swarm not found", "swarm_id": swarm_id.strip()}
+    return summary
 
 
 def handle_cache_get(args: dict) -> dict:
@@ -9797,6 +10203,9 @@ HANDLERS = {
     "cache_stats":    handle_cache_stats,
     "execute_subtask": handle_execute_subtask,
     "execute_swarm": handle_execute_swarm,
+    "report_host_wave": handle_report_host_wave,
+    "report_host_swarm_complete": handle_report_host_swarm_complete,
+    "inspect_swarm": handle_inspect_swarm,
     "apply_preview": handle_apply_preview,
     "inspect_task": handle_inspect_task,
     "resume_swarm_inspect": handle_resume_swarm_inspect,
@@ -9990,7 +10399,7 @@ def main() -> None:
                 cancelled,
             )
         for thread in dispatch_threads:
-            thread.join(timeout=120)
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":

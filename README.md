@@ -47,7 +47,7 @@ Docs: [limitations](docs/RELEASE_LIMITATIONS.md) · [legal](docs/LEGAL.md) · [a
 
 ## What is Threnody?
 
-**Threnody** is a local-first **MCP meta-harness** for developer workflows. Register it in Claude Code, Copilot CLI, Codex, Cursor, Junie, or OpenCode — Threnody **plans and routes** in MCP; the **host shell executes** via `host_spawn` / `host_spawn_waves` (Agent or Task subagents, direct edits).
+**Threnody** is a local-first **MCP meta-harness** for developer workflows. Register it in Claude Code, Copilot CLI, Codex, Cursor, Junie, or OpenCode — Threnody **plans and routes** in MCP; the **host shell executes** via `host_spawn` / `host_spawn_waves` (Agent or Task subagents). When a handoff includes `host_spawn_waves`, spawn subagents — do not substitute direct edits on planned files.
 
 `execute_subtask` is **utility delegation only** (opt-in): OpenCode, Aider, and local loopback endpoints — never to other host CLIs. Same-host work returns `HostNativeRequired` with an actionable spawn payload. Claude Code is a **router-only host** by default.
 

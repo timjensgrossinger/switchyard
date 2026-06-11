@@ -29,9 +29,19 @@ This path is **unaffected** by utility-only delegation rules.
    - **`awaiting_host_execution` + `host_spawn_waves`** — execute waves via host agents.
    - **`preview: true` + `preview_token`** — cost over budget; confirm then re-call with token.
    - **`started: true`** (delegate mode only) — Threnody subprocess orchestrator running.
-4. Monitor:
-   - Host-native: track wave completion yourself; optional `inspect_status`.
+4. **After each wave:** call `report_host_wave(swarm_id|host_run_id, wave, agents[])` with per-agent results (`spawn_id`, `success`, `touched_files`, optional `output_excerpt`).
+5. **Terminal wave:** set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`.
+6. Monitor:
+   - Host-native: `inspect_swarm` for status; optional `inspect_status`.
    - Delegate: `list_subtasks`, `resume_swarm_inspect`, `resume_swarm_confirm`.
+
+## Must (when awaiting_host_execution)
+
+- Spawn **one** host `Task`/`Agent` per entry in `host_spawn_waves[].agents` — all agents in a wave in **one parallel message**.
+- Pass each agent its `prompt`, `target_files`, `model`, and `subagent_type` from the handoff.
+- Do **not** use `Write`/`Edit` yourself on any `target_files` from the plan.
+- Do not follow `route_task`'s `direct_edit` hint while a handoff is active (`execution_hint.active_handoff` or pending `host_spawn_waves`).
+- After the wave: `report_host_wave` → `inspect_swarm`.
 
 ## Topology
 
@@ -62,4 +72,5 @@ For frontend + backend + API simultaneously, see **`threnody-fullstack`** — co
 ## Do not
 
 - Call `execute_subtask` for same-host swarm agents.
+- Substitute direct writes for swarm agents, even for low-tier or trivial tasks.
 - Assume Threnody merges conflicting parallel edits — include an integration wave or review yourself.

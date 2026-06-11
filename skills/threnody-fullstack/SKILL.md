@@ -11,6 +11,15 @@ description: >-
 Threnody has no dedicated "app builder" mode. Use **contract-first DAG planning**
 so frontend and backend agents align before parallel execution.
 
+## Mandatory: spawn subagents
+
+Full-stack orchestration uses the same contract as `threnody-task` and
+`threnody-swarm`:
+
+- **Spawn one host `Task`/`Agent` per subtask** in each wave.
+- **Never** implement wave work yourself with Write/Edit — even for low-tier integration subtasks.
+- Expect `host_execution_contract: spawn_subagents` on plan/swarm responses.
+
 ## Recommended wave shape
 
 ```text
@@ -37,8 +46,8 @@ lands — not before.
 | Plan once, host executes | `decompose_task` or `plan_task` | Ask planner for DAG + `depends_on` |
 | Persistence, budget, resume | `execute_swarm` | `topology: dag` or `auto` |
 
-Both return **`host_spawn_waves`** by default (host-native). Spawn one host
-`Task`/`Agent` per subtask per wave.
+Both return **`host_spawn_waves`** with `spawn_subagents` contract. Spawn one host
+`Task`/`Agent` per subtask per wave — parallel wave 2 agents in one message.
 
 ## Prompt the planner explicitly
 
@@ -65,7 +74,7 @@ wire-up. topology dag.
 |----------|------|
 | **Contract-first DAG** | **Recommended** — shared spec aligns workers |
 | **Integration wave** | Closest hard check — run tests after parallel work |
-| **Host lead review** | Default for host-native — you or lead agent merges |
+| **Host lead review** | Default for host-native — you merge after spawned agents finish |
 | **Star + delegate mode** | Optional single coordinator verdict rounds (expert/legacy) |
 
 Use coordinator **star** topology only in **delegate** swarm mode when you
@@ -76,11 +85,12 @@ swarms rely on contract + integration subtask + human/agent review.
 
 - Parallel frontend/backend **without** a contract wave → API drift and merge conflicts.
 - Expecting Threnody to auto-merge conflicting edits — add wave 3 integration.
-- Using `execute_subtask` for host work — use `host_spawn_waves` instead.
+- Using `execute_subtask` for host work — spawn `host_spawn_waves` instead.
+- Skipping Task/Agent spawn and editing files directly — defeats orchestration.
 
 ## Related skills
 
 - Planning entry: `threnody-plan`
 - Normal execution: `threnody-task`
 - `threnody-swarm` — `execute_swarm`, topology, budget preview
-- `threnody-routing` — host-native vs utility delegation
+- `threnody-routing` — host-native vs utility delegation (direct edit only without orchestration skills)

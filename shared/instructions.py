@@ -101,8 +101,8 @@ def render_shell_instructions(
 
     lines.append("")
     lines.append(
-        "For low-tier work, prefer direct edits or the host subagent tool from `host_spawn`; "
-        "do not use `execute_subtask` to route between host CLIs."
+        "For low-tier work without an active host_spawn_waves handoff, prefer direct edits or the host "
+        "subagent tool from `host_spawn`; do not use `execute_subtask` to route between host CLIs."
     )
 
     host_tool = "Agent" if profile.shell_id == "claude-code" else "Task"
@@ -112,11 +112,15 @@ def render_shell_instructions(
             "### Host-native execution contract",
             "",
             "After `route_task`, `plan_task`, or `fleet_plan`, consume `host_spawn` / `host_spawn_waves` from the MCP response.",
-            f"Spawn each wave with the host `{host_tool}` tool (or direct edits when `host_native_method` is `direct_edit`).",
+            f"When `host_spawn_waves` or `host_execution_contract: spawn_subagents` is present, spawn each wave with the host `{host_tool}` tool — do **not** use direct Write/Edit on planned `target_files`.",
+            f"For lone `route_task` results with no pending handoff, direct edits are allowed when `host_native_method` is `direct_edit`.",
             "Do **not** call `execute_subtask` for same-host work — Threnody returns `HostNativeRequired` with an actionable `host_spawn` payload.",
             "Use `execute_subtask(provider_id=...)` only for utility backends in `delegation_targets` when `providers.delegation_utilities_enabled` is true.",
             "Host→host `execute_subtask` (Copilot, Codex, Cursor, Junie, Claude) returns `HostDelegationBlocked`.",
             "`execute_swarm` defaults to `host_native`: execute `host_spawn_waves` in the host shell; Threnody persists the plan as `awaiting_host_execution` without subprocess fanout.",
+            "After each host wave completes, call `report_host_wave` with agent results (`spawn_id`, `success`, `touched_files`, optional `output_excerpt`).",
+            "On the final wave, set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`.",
+            "Use `inspect_swarm` to verify run status (`awaiting_host_execution` → `running` → `completed`).",
         ]
     )
     if profile.shell_id == "claude-code":

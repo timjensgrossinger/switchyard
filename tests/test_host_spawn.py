@@ -9,12 +9,13 @@ import pytest
 from shared.config import TGsConfig
 from shared.host_spawn import (
     HOST_SPAWN_ERROR,
+    HOST_EXECUTION_CONTRACT,
     build_host_native_required_response,
     build_host_spawn,
     build_host_spawn_waves,
+    enrich_host_spawn_waves,
     effective_swarm_host_execution_mode,
     host_tool_for_caller,
-    normalize_host_task_model,
     would_self_delegate,
 )
 
@@ -39,7 +40,9 @@ def test_build_host_spawn_waves_from_plan() -> None:
     assert len(waves) == 2
     assert waves[0]["agents"][0]["tool"] == "Agent"
     assert waves[0]["agents"][0]["subagent_type"] == "threnody-medium"
-    assert waves[1]["agents"][0]["method"] == "direct_edit"
+    assert waves[1]["agents"][0]["method"] == "host_task"
+    assert waves[1]["agents"][0]["spawn_required"] is True
+    assert waves[1]["execution_contract"] == "spawn_subagents"
     assert waves[1]["agents"][0]["target_files"] == ["tests/test_auth.py"]
 
 
@@ -95,10 +98,20 @@ def test_effective_swarm_host_execution_mode_per_caller_override() -> None:
     assert effective_swarm_host_execution_mode(cfg, "claude-code") == "delegate"
 
 
-def test_normalize_host_task_model_maps_cursor_registry_ids() -> None:
-    assert normalize_host_task_model("cursor", "composer-2.5", "medium") == "composer-2.5-fast"
-    assert normalize_host_task_model("cursor", "claude-sonnet", "medium") == (
-        "claude-4.6-sonnet-medium-thinking"
+def test_enrich_host_spawn_waves_forces_host_task_contract() -> None:
+    waves = enrich_host_spawn_waves(
+        [
+            {
+                "wave": 1,
+                "parallel": True,
+                "agents": [
+                    {"id": "1", "method": "direct_edit", "tier": "low"},
+                    {"id": "2", "method": "direct_edit", "tier": "low"},
+                ],
+            }
+        ]
     )
-    assert normalize_host_task_model("cursor", None, "low") == "composer-2.5-fast"
-    assert normalize_host_task_model("claude-code", "sonnet", "medium") == "sonnet"
+    assert waves[0]["execution_contract"] == HOST_EXECUTION_CONTRACT
+    for agent in waves[0]["agents"]:
+        assert agent["method"] == "host_task"
+        assert agent["spawn_required"] is True

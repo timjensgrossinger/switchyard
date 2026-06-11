@@ -34,11 +34,15 @@ persistence contract (`swarm_id`, budget preview, resume checkpoints).
 4. **Execute waves in order** via host `Task`/`Agent`:
    - Agents within one wave may run **in parallel**.
    - Respect wave ordering (later waves wait for earlier dependencies).
-5. **Optional:** `fleet_plan(task)` when you want ready-made fleet command strings per wave.
+5. **After each wave:** `report_host_wave(host_run_id|plan_run_id, wave, agents[])` — use `host_run_id` from the plan response.
+6. **Final wave:** `terminal=true` + `outcome`, or `report_host_swarm_complete`.
+7. **Optional:** `fleet_plan(task)` when you want ready-made fleet command strings per wave.
 
 ## Rules
 
+- When `host_spawn_waves` or `host_execution_contract: spawn_subagents` is present, spawn one `Task`/`Agent` per agent — never use direct `Write`/`Edit` on planned `target_files`.
 - Do **not** call `execute_subtask` for same-host work — use `host_spawn` entries.
+- Do not follow `route_task` `direct_edit` while a plan handoff is active; use `routing_guard` and `host_run_id` from the plan response.
 - Utility delegation only when `delegation_utilities_enabled: true` (see `threnody-routing`).
 - For frontend + backend + API in parallel, use the contract-first pattern in `threnody-fullstack`.
 
@@ -52,9 +56,11 @@ decompose_task(task="Refactor auth across services and UI")
      { wave: 2, parallel: true, agents: [...] }
    ]
 → Spawn each agent via host Task tool; wait for wave N before wave N+1.
+→ report_host_wave(host_run_id, wave=N, agents=[{spawn_id, success, touched_files}, ...])
 ```
 
 ## MCP tools
 
 - `route_task`, `plan_task`, `decompose_task`, `fleet_plan`
+- `report_host_wave`, `report_host_swarm_complete`, `inspect_swarm`
 - `validate_routing_guard` (guarded hosts before edits)

@@ -210,7 +210,7 @@ Routing eval fixtures live in `tests/eval/` organised by tier (`low_tier/`, `med
 
 - Threnody is not affiliated with or endorsed by any AI provider
 - Provider terms, policies, and enforcement may change at any time without notice
-- Host shells execute via `host_spawn` / `host_spawn_waves` (Agent/Task); `execute_subtask` is utility-delegation only (opt-in); host→host subprocess delegation is blocked
+- Host shells execute via `host_spawn` / `host_spawn_waves` (Agent/Task); when `host_spawn_waves` is present, spawn subagents — do not substitute direct edits on planned `target_files`. `execute_subtask` is utility-delegation only (opt-in); host→host subprocess delegation is blocked
 - Override router-only hosts via `providers.router_only_allow_execution`; see `docs/LEGAL.md`
 
 `routing_exceptions` is an exemption list, not a code-file allowlist. Add only extra non-code surfaces there; do not enumerate code languages or config formats.

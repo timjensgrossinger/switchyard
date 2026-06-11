@@ -12,23 +12,7 @@ from .config import TGsConfig, normalize_caller_id, normalize_routing_policy_she
 from .discovery import HOST_PROVIDER_NAMES, ROUTER_ONLY_PROVIDERS
 
 HOST_SPAWN_ERROR = "HostNativeRequired"
-
-# Cursor Task/Agent subagent tool accepts only specific model slugs — not every
-# cursor-agent model id. Map registry/routing ids to spawnable slugs per tier.
-CURSOR_HOST_TASK_MODELS: dict[str, str] = {
-    "low": "composer-2.5-fast",
-    "medium": "composer-2.5-fast",
-    "high": "claude-opus-4-8-thinking-high",
-}
-CURSOR_HOST_TASK_MODEL_ALIASES: dict[str, str] = {
-    "composer-2.5": "composer-2.5-fast",
-    "claude-haiku": "composer-2.5-fast",
-    "claude-sonnet": "claude-4.6-sonnet-medium-thinking",
-    "claude-opus": "claude-opus-4-8-thinking-high",
-    "claude-sonnet-4.6": "claude-4.6-sonnet-medium-thinking",
-    "gpt-5-mini": "composer-2.5-fast",
-}
-
+HOST_EXECUTION_CONTRACT = "spawn_subagents"
 COMPLIANCE_WARNING = (
     "router_only_allow_execution bypasses host-native execution and may violate "
     "provider OAuth policy — see docs/LEGAL.md"
@@ -49,6 +33,8 @@ class HostSpawnSpec:
     wave_id: str | None = None
     target_files: list[str] = field(default_factory=list)
     id: str | None = None
+    task_id: str | None = None
+    run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -68,6 +54,10 @@ class HostSpawnSpec:
             payload["target_files"] = list(self.target_files)
         if self.id is not None:
             payload["id"] = self.id
+        if self.task_id is not None:
+            payload["task_id"] = self.task_id
+        if self.run_id is not None:
+            payload["run_id"] = self.run_id
         return payload
 
 
@@ -94,7 +84,7 @@ def _live_tier_model_for_caller(
     if not isinstance(provider_list, list):
         return None
     for provider in provider_list:
-        if not _provider_matches_caller(registry, provider, caller):
+        if getattr(provider, "name", None) != normalized:
             continue
         tier_models = getattr(provider, "tier_models", None)
         if not isinstance(tier_models, dict):
@@ -104,25 +94,6 @@ def _live_tier_model_for_caller(
             return candidate.strip()
         return None
     return None
-
-
-def normalize_host_task_model(
-    caller: str | None,
-    model: str | None,
-    tier: str,
-) -> str | None:
-    """Return a model slug the host Task/Agent tool can actually spawn."""
-    normalized_caller = normalize_caller_id(caller)
-    resolved = model.strip() if isinstance(model, str) and model.strip() else None
-
-    if normalized_caller == "cursor":
-        if resolved and resolved in CURSOR_HOST_TASK_MODEL_ALIASES:
-            return CURSOR_HOST_TASK_MODEL_ALIASES[resolved]
-        if resolved and resolved in CURSOR_HOST_TASK_MODEL_ALIASES.values():
-            return resolved
-        return CURSOR_HOST_TASK_MODELS.get(tier) or CURSOR_HOST_TASK_MODELS.get("low")
-
-    return resolved
 
 
 def host_native_model_for_tier(
@@ -142,7 +113,7 @@ def host_native_model_for_tier(
 
     live_model = _live_tier_model_for_caller(caller, tier, registry)
     if live_model:
-        return normalize_host_task_model(caller, live_model, tier)
+        return live_model
 
     if config is None:
         return None
@@ -152,9 +123,7 @@ def host_native_model_for_tier(
         return None
     profile = config.routing_policy.effective_profile(shell_id)
     model = profile.tier_model_mapping.get(tier)
-    if isinstance(model, str) and model.strip():
-        return normalize_host_task_model(caller, model.strip(), tier)
-    return None
+    return model if isinstance(model, str) and model.strip() else None
 
 
 def subagent_type_for_tier(tier: str) -> str:
@@ -193,6 +162,37 @@ def _subtask_target_files(subtask: Mapping[str, Any]) -> list[str]:
     if isinstance(target_file, str) and target_file.strip():
         return [target_file.strip()]
     return []
+
+
+def enrich_host_spawn_waves(
+    waves: list[dict[str, Any]],
+    *,
+    force_spawn: bool = True,
+) -> list[dict[str, Any]]:
+    """Apply host handoff execution contract to wave payloads."""
+    if not force_spawn or not waves:
+        return waves
+    enriched: list[dict[str, Any]] = []
+    for wave in waves:
+        if not isinstance(wave, dict):
+            enriched.append(wave)
+            continue
+        next_wave = dict(wave)
+        next_wave["execution_contract"] = HOST_EXECUTION_CONTRACT
+        agents_raw = next_wave.get("agents")
+        if isinstance(agents_raw, list):
+            next_agents: list[dict[str, Any]] = []
+            for agent in agents_raw:
+                if not isinstance(agent, dict):
+                    next_agents.append(agent)
+                    continue
+                next_agent = dict(agent)
+                next_agent["method"] = "host_task"
+                next_agent["spawn_required"] = True
+                next_agents.append(next_agent)
+            next_wave["agents"] = next_agents
+        enriched.append(next_wave)
+    return enriched
 
 
 def build_host_spawn_waves(
@@ -253,6 +253,8 @@ def build_host_spawn_waves(
             )
         if agents:
             host_waves.append({"wave": wave_idx, "parallel": len(agents) > 1, "agents": agents})
+    if _caller_is_host(caller) and host_waves:
+        return enrich_host_spawn_waves(host_waves)
     return host_waves
 
 

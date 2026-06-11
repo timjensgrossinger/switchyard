@@ -2,9 +2,10 @@
 
 1. Call `route_task` or `plan_task` / `decompose_task`.
 2. Consume `host_spawn` or `host_spawn_waves` from the response.
-3. Spawn host subagents with **Agent** (Claude Code) or **Task** (other shells).
-4. Use `execute_subtask(provider_id=...)` only for utility backends when `delegation_utilities_enabled` is true.
-5. `execute_swarm` defaults to `host_native` — run returned waves in the host; no subprocess fanout.
+3. When `host_spawn_waves` or `host_execution_contract: spawn_subagents` is present, spawn one **Agent** or **Task** subagent per agent entry — do not use direct Write/Edit on planned `target_files`.
+4. For lone `route_task` results without a pending handoff, direct edits are allowed when `host_native_method` is `direct_edit`.
+5. Use `execute_subtask(provider_id=...)` only for utility backends when `delegation_utilities_enabled` is true.
+6. `execute_swarm` defaults to `host_native` — run returned waves in the host; no subprocess fanout.
 
 Same-host `execute_subtask` returns `HostNativeRequired`.
 

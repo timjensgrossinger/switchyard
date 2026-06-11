@@ -68,3 +68,11 @@ def test_handle_plan_task_cursor_skips_planner_backend(monkeypatch: pytest.Monke
         assert result.get("planner_host_execution_mode") == "host_native"
         assert result.get("planner_mode") == "heuristic"
         assert len(result.get("subtasks", [])) == 3
+        assert result.get("host_execution_contract") == "spawn_subagents"
+        waves = result.get("host_spawn_waves")
+        assert isinstance(waves, list) and waves
+        for wave in waves:
+            assert wave.get("execution_contract") == "spawn_subagents"
+            for agent in wave.get("agents", []):
+                assert agent.get("method") == "host_task"
+                assert agent.get("spawn_required") is True

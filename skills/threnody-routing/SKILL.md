@@ -15,9 +15,15 @@ coordinates routing, planning, and optional utility delegation.
 
 1. Call `route_task(task=...)` (MCP: Threnody).
 2. Read `execution_hint.mode`:
-   - `host_native` — use direct edits or host `Task`/`Agent` (`host_spawn` in response).
+   - `host_native` — use host `Task`/`Agent` (`host_spawn` in response).
    - `delegate` — only when `delegation_utilities_enabled` is true and targets are utilities.
 3. Follow `recommended_action` and `host_native_model` / `host_native_method`.
+
+## Handoff precedence
+
+When a prior `plan_task`, `fleet_plan`, or `execute_swarm` response includes `host_spawn_waves` or `host_execution_contract: spawn_subagents`, **always spawn** per agent — `host_native_method: direct_edit` does not apply.
+
+`direct_edit` is only for lone `route_task` results with no pending handoff (`execution_hint.active_handoff` is not set).
 
 ## Utility-only delegation
 

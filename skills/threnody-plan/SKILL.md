@@ -74,7 +74,8 @@ Include `consumes` / `produces` / `depends_on` when the plan exposes them.
 **Plan-then-execute** (default):
 
 - Show a **brief** wave summary (can be shorter than full table).
-- Immediately execute `host_spawn_waves` via `threnody-task` or `threnody-swarm`.
+- Immediately spawn `host_spawn_waves` via `threnody-task` or `threnody-swarm` — the orchestrator does **not** implement subtasks with direct edits.
+- **Mandatory:** after each wave, call `report_host_wave`; use `inspect_swarm` to confirm status transitions.
 
 ## Full-stack prompt boilerplate
 

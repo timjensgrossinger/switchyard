@@ -454,6 +454,7 @@ def record_swarm_outcome(
     coordinator_amendment_count: int = 0,
     operator_id: str | None = None,
     note: str | Mapping[str, object] | None = None,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_swarm_id = _normalize_required_string(swarm_id, "swarm_id")
     normalized_outcome = _normalize_outcome(outcome)
@@ -501,6 +502,7 @@ def record_swarm_outcome(
             normalized_outcome,
             operator_id=operator_id,
             note=normalized_note,
+            project_id=project_id,
         )
     except Exception:
         if telemetry_id is not None:
