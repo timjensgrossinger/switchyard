@@ -1295,11 +1295,15 @@ class Planner:
                 )
 
         started_at = time.monotonic()
+        intent_templates = True
+        if self._config is not None:
+            intent_templates = bool(self._config.heuristic_intent_templates)
         parsed = build_heuristic_plan_payload(
             task,
             default_tier=default_tier,
             max_agents=max_agents,
             topology=topology,
+            intent_templates=intent_templates,
         )
         plan = self._build_plan(parsed, task)
         plan.planner_mode = "heuristic"

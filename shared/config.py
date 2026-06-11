@@ -1322,6 +1322,7 @@ class TGsConfig:
     # plan_task/decompose_task/fleet_plan host planning: host_native (heuristic) or delegate (LLM CLI).
     planner_host_execution_mode: str = "host_native"
     planner_host_execution_mode_by_caller: dict[str, str] = field(default_factory=dict)
+    heuristic_intent_templates: bool = True
 
     # Janitor-style verify gate (plan 04).
     verify_gate: VerifyGateConfig = field(default_factory=VerifyGateConfig)
@@ -2106,6 +2107,9 @@ class TGsConfig:
                 and isinstance(mode, str)
                 and str(mode).strip().lower() in {"host_native", "delegate"}
             }
+        raw_intent_templates = orchestrator_raw.get("heuristic_intent_templates", True)
+        if isinstance(raw_intent_templates, bool):
+            cfg.heuristic_intent_templates = raw_intent_templates
 
         if isinstance(providers_section, dict):
             # Optional: per-provider usage-window thresholds
@@ -2393,6 +2397,7 @@ class TGsConfig:
                 "planner_host_execution_mode_by_caller": dict(
                     sorted(self.planner_host_execution_mode_by_caller.items())
                 ),
+                "heuristic_intent_templates": self.heuristic_intent_templates,
             },
             "parallelism": {
                 "enabled": self.parallelism.enabled,

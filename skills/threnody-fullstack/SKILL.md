@@ -49,6 +49,10 @@ lands — not before.
 Both return **`host_spawn_waves`** with `spawn_subagents` contract. Spawn one host
 `Task`/`Agent` per subtask per wave — parallel wave 2 agents in one message.
 
+Host-native heuristic planning also recognizes **fullstack/openapi** intent and
+builds a contract-first DAG automatically. After wave 1, use `expand_host_plan`
+if additional files were discovered.
+
 ## Prompt the planner explicitly
 
 Include in the task string:

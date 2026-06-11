@@ -34,12 +34,14 @@ persistence contract (`swarm_id`, budget preview, resume checkpoints).
 4. **Execute waves in order** via host `Task`/`Agent`:
    - Agents within one wave may run **in parallel**.
    - Respect wave ordering (later waves wait for earlier dependencies).
-5. **After each wave:** `report_host_wave(host_run_id|plan_run_id, wave, agents[])` — use `host_run_id` from the plan response.
-6. **Final wave:** `terminal=true` + `outcome`, or `report_host_swarm_complete`.
+5. **After each wave:** `report_host_wave(host_run_id|plan_run_id, wave, workspace_root, agents[])` — include `task_id`, `spawn_id`, `success`, `touched_files`, and **`output_excerpt`** per agent (see `learning_report_contract` on the plan response).
+6. **Mid-run:** `expand_host_plan(discovered_files=[...])` when wave 1 discovers files not in the initial plan.
+7. **Final wave:** `terminal=true` + `outcome`, or `report_host_swarm_complete`. Check `finalize.swarm_outcome`.
 7. **Optional:** `fleet_plan(task)` when you want ready-made fleet command strings per wave.
 
 ## Rules
 
+- Host-native heuristic planning fans out **one agent per file** for webapp/fullstack intent or explicit paths; single-file tasks stay one agent.
 - When `host_spawn_waves` or `host_execution_contract: spawn_subagents` is present, spawn one `Task`/`Agent` per agent — never use direct `Write`/`Edit` on planned `target_files`.
 - Do **not** call `execute_subtask` for same-host work — use `host_spawn` entries.
 - Do not follow `route_task` `direct_edit` while a plan handoff is active; use `routing_guard` and `host_run_id` from the plan response.
@@ -56,11 +58,20 @@ decompose_task(task="Refactor auth across services and UI")
      { wave: 2, parallel: true, agents: [...] }
    ]
 → Spawn each agent via host Task tool; wait for wave N before wave N+1.
-→ report_host_wave(host_run_id, wave=N, agents=[{spawn_id, success, touched_files}, ...])
+→ report_host_wave(
+     host_run_id,
+     wave=N,
+     workspace_root="<from plan handoff>",
+     agents=[{
+       task_id, spawn_id, success,
+       touched_files: ["relative/path.py"],
+       output_excerpt: "short agent summary",
+     }, ...],
+   )
 ```
 
 ## MCP tools
 
 - `route_task`, `plan_task`, `decompose_task`, `fleet_plan`
-- `report_host_wave`, `report_host_swarm_complete`, `inspect_swarm`
+- `report_host_wave`, `report_host_swarm_complete`, `expand_host_plan`, `inspect_swarm`
 - `validate_routing_guard` (guarded hosts before edits)

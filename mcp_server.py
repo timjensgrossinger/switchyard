@@ -129,11 +129,13 @@ from shared.host_spawn import (
     _caller_is_host,
 )
 from shared.host_learning import (
+    build_learning_report_contract,
     ingest_host_wave,
     inspect_host_swarm,
     plan_run_id,
     register_host_run_handoff,
 )
+from shared.host_plan_expand import expand_host_plan
 from shared.quota import ProviderQuotaService
 from shared.adapters import ProviderCapability
 from shared.snapshot import FileDiff, FileSnapshot, apply_unified_diff
@@ -1336,6 +1338,8 @@ TOOLS = [
         "description": (
             "Report completion of one host-native swarm/plan wave. "
             "Call after spawning and finishing each host_spawn_waves wave. "
+            "Pass workspace_root from the handoff (learning_report_contract) and per-agent "
+            "output_excerpt for learning quality. "
             "Set terminal=true on the last wave with outcome=accepted|revised|reworked|rejected."
         ),
         "inputSchema": {
@@ -1353,6 +1357,10 @@ TOOLS = [
                             "spawn_id": {"type": "string"},
                             "id": {"type": "string"},
                             "task_id": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "description": {"type": "string"},
+                            "tier": {"type": "string"},
+                            "model": {"type": "string"},
                             "success": {"type": "boolean"},
                             "touched_files": {"type": "array", "items": {"type": "string"}},
                             "output_excerpt": {"type": "string"},
@@ -1367,8 +1375,43 @@ TOOLS = [
                     "enum": ["accepted", "revised", "reworked", "rejected"],
                 },
                 "workspace_root": {"type": "string"},
+                "expand_plan": {
+                    "type": "boolean",
+                    "description": "When true, expand plan from discovered_files after this wave.",
+                },
+                "discovered_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New file paths to fan out into additional host_spawn_waves.",
+                },
             },
             "required": ["wave", "agents"],
+        },
+    },
+    {
+        "name": "expand_host_plan",
+        "description": (
+            "Expand a host-native swarm/plan run with additional file-scoped subtasks. "
+            "Returns pending host_spawn_waves for discovered files not yet assigned."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swarm_id": {"type": "string"},
+                "run_id": {"type": "string"},
+                "host_run_id": {"type": "string"},
+                "discovered_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "descriptions": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "workspace_root": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["discovered_files"],
         },
     },
     {
@@ -2105,6 +2148,8 @@ def handle_fleet_plan(args: dict) -> dict:
     config, db, router, planner, orchestrator = _ensure_init()
     caller = _resolve_caller()
     task = args.get("task", "")
+    workspace_root = args.get("cwd") if isinstance(args.get("cwd"), str) else None
+    host_run_id = plan_run_id(task) if normalize_caller_id(caller) in HOST_PROVIDER_NAMES else None
     cached = db.cache_get(task)
     if cached is not None:
         result_str, model = cached
@@ -2118,16 +2163,22 @@ def handle_fleet_plan(args: dict) -> dict:
                         cached_result.get("plan") or {},
                     )
                 cached_result["cache_hit"] = True
+                plan_payload = cached_result.get("plan") or cached_result
                 _attach_host_spawn_metadata(
-                    cached_result.get("plan") or cached_result,
+                    plan_payload,
                     config=config,
                     caller=caller,
                     task=task,
+                    db=db,
+                    run_id=host_run_id,
+                    workspace_root=workspace_root,
                 )
+                if host_run_id:
+                    cached_result["host_run_id"] = host_run_id
                 if isinstance(cached_result.get("fleet_waves"), list):
                     cached_result["fleet_waves"] = _enrich_fleet_waves_with_host_spawn(
                         cached_result["fleet_waves"],
-                        cached_result.get("plan") or cached_result,
+                        plan_payload,
                         config=config,
                         caller=caller,
                     )
@@ -2137,10 +2188,18 @@ def handle_fleet_plan(args: dict) -> dict:
                     cwd=args.get("cwd"),
                     task=task,
                     source_tool="fleet_plan",
-                    payload=cached_result.get("plan") or cached_result,
+                    payload=plan_payload,
                 )
                 if guard is not None:
                     cached_result["routing_guard"] = guard
+                if host_run_id:
+                    _persist_host_plan_run(
+                        db,
+                        run_id=host_run_id,
+                        task=task,
+                        payload=plan_payload,
+                        workspace_root=workspace_root,
+                    )
                 return cached_result
             if "subtasks" in cached_result:
                 cached_result = _attach_models_to_subtasks(cached_result)
@@ -2153,7 +2212,17 @@ def handle_fleet_plan(args: dict) -> dict:
                     "execution_note": _fleet_note(len(fleet_waves)),
                     "cache_hit": True,
                 }
-                _attach_host_spawn_metadata(cached_result, config=config, caller=caller, task=task)
+                _attach_host_spawn_metadata(
+                    cached_result,
+                    config=config,
+                    caller=caller,
+                    task=task,
+                    db=db,
+                    run_id=host_run_id,
+                    workspace_root=workspace_root,
+                )
+                if host_run_id:
+                    result["host_run_id"] = host_run_id
                 result["fleet_waves"] = _enrich_fleet_waves_with_host_spawn(
                     fleet_waves,
                     cached_result,
@@ -2170,6 +2239,14 @@ def handle_fleet_plan(args: dict) -> dict:
                 )
                 if guard is not None:
                     result["routing_guard"] = guard
+                if host_run_id:
+                    _persist_host_plan_run(
+                        db,
+                        run_id=host_run_id,
+                        task=task,
+                        payload=cached_result,
+                        workspace_root=workspace_root,
+                    )
                 return result
         except (json.JSONDecodeError, TypeError):
             pass
@@ -2192,7 +2269,15 @@ def handle_fleet_plan(args: dict) -> dict:
     plan_dict = _attach_models_to_subtasks(planner.plan_to_dict(plan))
     if used_heuristic:
         plan_dict["planner_host_execution_mode"] = "host_native"
-    _attach_host_spawn_metadata(plan_dict, config=config, caller=caller, task=task)
+    _attach_host_spawn_metadata(
+        plan_dict,
+        config=config,
+        caller=caller,
+        task=task,
+        db=db,
+        run_id=host_run_id,
+        workspace_root=workspace_root,
+    )
 
     fleet_waves = _attach_plan_routing_to_fleet_waves(
         plan_dict,
@@ -2211,6 +2296,8 @@ def handle_fleet_plan(args: dict) -> dict:
     }
     if used_heuristic:
         result["planner_host_execution_mode"] = "host_native"
+    if host_run_id:
+        result["host_run_id"] = host_run_id
     guard = _issue_host_handoff_routing_guard(
         db,
         caller=caller,
@@ -2221,6 +2308,14 @@ def handle_fleet_plan(args: dict) -> dict:
     )
     if guard is not None:
         result["routing_guard"] = guard
+    if host_run_id:
+        _persist_host_plan_run(
+            db,
+            run_id=host_run_id,
+            task=task,
+            payload=plan_dict,
+            workspace_root=workspace_root,
+        )
     cacheable_result = dict(result)
     cacheable_result.pop("routing_guard", None)
     db.cache_put(task, json.dumps(cacheable_result), "planner")
@@ -2763,6 +2858,7 @@ def _register_host_handoff_if_ready(
     run_id: str | None,
     workspace_root: str | None = None,
     topology: str | None = None,
+    task_hint: str | None = None,
 ) -> None:
     if db is None or not run_id:
         return
@@ -2783,6 +2879,7 @@ def _register_host_handoff_if_ready(
         workspace_root=workspace_root,
         project_id=workspace_root,
         topology=topology or str(payload.get("topology") or "linear"),
+        task_hint=task_hint,
     )
     payload["host_run_id"] = run_id
 
@@ -2823,7 +2920,14 @@ def _attach_host_spawn_metadata(
             run_id=run_id,
             workspace_root=workspace_root,
             topology=topology,
+            task_hint=task if isinstance(task, str) else None,
         )
+        if payload.get("host_spawn_waves"):
+            resolved_root = workspace_root or str(_active_workspace_root())
+            payload["workspace_root"] = resolved_root
+            payload["learning_report_contract"] = build_learning_report_contract(
+                resolved_root
+            )
         return
     hint = execution_hint if isinstance(execution_hint, dict) else {}
     if hint.get("mode") != "host_native":
@@ -2925,7 +3029,16 @@ def _execute_swarm_host_native_response(
     plan_dict = _attach_models_to_subtasks(planner.plan_to_dict(plan))
     if used_heuristic:
         plan_dict["planner_host_execution_mode"] = "host_native"
-    _attach_host_spawn_metadata(plan_dict, config=config, caller=caller, db=db, run_id=swarm_id, workspace_root=str(request_meta.get("workspace_root") or _active_workspace_root()), topology=str(request_meta.get("topology") or plan.topology or "linear"))
+    _attach_host_spawn_metadata(
+        plan_dict,
+        config=config,
+        caller=caller,
+        task=task_text,
+        db=db,
+        run_id=swarm_id,
+        workspace_root=str(request_meta.get("workspace_root") or _active_workspace_root()),
+        topology=str(request_meta.get("topology") or plan.topology or "linear"),
+    )
     host_waves = plan_dict.get("host_spawn_waves")
     if not isinstance(host_waves, list):
         host_waves = []
@@ -2952,20 +3065,26 @@ def _execute_swarm_host_native_response(
         "host_native_handoff",
         {"wave_count": len(host_waves), "task_chars": len(task_text)},
     )
+    resolved_workspace = str(
+        request_meta.get("workspace_root") or _active_workspace_root()
+    )
     guard = _issue_host_handoff_routing_guard(
         db,
         caller=caller,
-        cwd=request_meta.get("workspace_root") or _active_workspace_root(),
+        cwd=resolved_workspace,
         task=task_text,
         source_tool="execute_swarm",
         payload=plan_dict,
     )
+    learning_contract = build_learning_report_contract(resolved_workspace)
     swarm_result: dict[str, object] = {
         "swarm_id": swarm_id,
         "host_execution_mode": "host_native",
         "started": False,
         "awaiting_host_execution": True,
         "host_spawn_waves": host_waves,
+        "workspace_root": resolved_workspace,
+        "learning_report_contract": learning_contract,
         "plan": plan_dict,
         "cost_estimate": {
             "estimated": float(estimated_cost),
@@ -2977,7 +3096,9 @@ def _execute_swarm_host_native_response(
             "Execute each host_spawn_waves entry via the host Agent/Task tool; "
             "do not use direct Write/Edit on planned target_files — spawn one subagent per agent entry. "
             "Do not call execute_subtask for same-host work. "
-            "After each wave completes, call report_host_wave(swarm_id, wave, agents[]); "
+            "After each wave completes, call report_host_wave(swarm_id, wave, workspace_root, agents[]) "
+            "with per-agent task_id, spawn_id, success, touched_files, and output_excerpt "
+            "(see learning_report_contract); "
             "on the final wave set terminal=true and outcome=accepted|revised|reworked|rejected."
         ),
     }
@@ -5601,6 +5722,11 @@ def handle_report_host_wave(args: dict) -> dict:
         return {"error": "workspace_root must be a string when provided"}
     terminal = bool(args.get("terminal", False))
     outcome = args.get("outcome")
+    expand_plan = bool(args.get("expand_plan", False))
+    discovered_raw = args.get("discovered_files")
+    discovered_files: list[str] | None = None
+    if isinstance(discovered_raw, list):
+        discovered_files = [str(p) for p in discovered_raw if str(p).strip()]
     try:
         return ingest_host_wave(
             db,
@@ -5612,12 +5738,60 @@ def handle_report_host_wave(args: dict) -> dict:
             outcome=str(outcome) if outcome is not None else None,
             config=config,
             router=router,
+            expand_plan=expand_plan,
+            discovered_files=discovered_files,
         )
     except ValueError as exc:
         return {"error": str(exc)}
     except Exception as exc:
         log.warning("report_host_wave failed for %s", run_id, exc_info=True)
-        return {"error": "report_host_wave failed", "details": str(exc)}
+        return {
+            "error": type(exc).__name__,
+            "details": str(exc),
+        }
+
+
+def handle_expand_host_plan(args: dict) -> dict:
+    config, db, router, planner, orchestrator = _ensure_init()
+    caller = _resolve_caller()
+    try:
+        run_id = _resolve_host_run_id(args)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    discovered_raw = args.get("discovered_files")
+    if not isinstance(discovered_raw, list) or not discovered_raw:
+        return {"error": "discovered_files must be a non-empty list"}
+    workspace_root = args.get("workspace_root")
+    if workspace_root is not None and not isinstance(workspace_root, str):
+        return {"error": "workspace_root must be a string when provided"}
+    descriptions_raw = args.get("descriptions")
+    descriptions: dict[str, str] | None = None
+    if isinstance(descriptions_raw, dict):
+        descriptions = {
+            str(k): str(v)
+            for k, v in descriptions_raw.items()
+            if str(k).strip() and str(v).strip()
+        }
+    reason = args.get("reason")
+    try:
+        return expand_host_plan(
+            db,
+            run_id=run_id,
+            discovered_files=[str(p) for p in discovered_raw],
+            workspace_root=workspace_root,
+            config=config,
+            caller=caller,
+            reason=str(reason) if isinstance(reason, str) and reason.strip() else "expand_host_plan",
+            descriptions=descriptions,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        log.warning("expand_host_plan failed for %s", run_id, exc_info=True)
+        return {
+            "error": type(exc).__name__,
+            "details": str(exc),
+        }
 
 
 def handle_report_host_swarm_complete(args: dict) -> dict:
@@ -10205,6 +10379,7 @@ HANDLERS = {
     "execute_swarm": handle_execute_swarm,
     "report_host_wave": handle_report_host_wave,
     "report_host_swarm_complete": handle_report_host_swarm_complete,
+    "expand_host_plan": handle_expand_host_plan,
     "inspect_swarm": handle_inspect_swarm,
     "apply_preview": handle_apply_preview,
     "inspect_task": handle_inspect_task,

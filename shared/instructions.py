@@ -118,8 +118,10 @@ def render_shell_instructions(
             "Use `execute_subtask(provider_id=...)` only for utility backends in `delegation_targets` when `providers.delegation_utilities_enabled` is true.",
             "Host→host `execute_subtask` (Copilot, Codex, Cursor, Junie, Claude) returns `HostDelegationBlocked`.",
             "`execute_swarm` defaults to `host_native`: execute `host_spawn_waves` in the host shell; Threnody persists the plan as `awaiting_host_execution` without subprocess fanout.",
-            "After each host wave completes, call `report_host_wave` with agent results (`spawn_id`, `success`, `touched_files`, optional `output_excerpt`).",
-            "On the final wave, set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`.",
+            "Heuristic planning fans out **one host agent per file** when task intent implies multiple files (webapp, html/css/js, fullstack) or when paths are listed.",
+            "After scaffold/contract waves, call `expand_host_plan` with `discovered_files` or use `report_host_wave(expand_plan=true, discovered_files=[...])` to spawn remaining file agents.",
+            "After each host wave completes, call `report_host_wave` with `workspace_root` from the handoff (`learning_report_contract`) and per-agent results: `task_id`, `spawn_id`, `success`, `touched_files`, and `output_excerpt` (required for learning quality).",
+            "On the final wave, set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`. Check `finalize.swarm_outcome` and `swarm_outcome_error`.",
             "Use `inspect_swarm` to verify run status (`awaiting_host_execution` → `running` → `completed`).",
         ]
     )

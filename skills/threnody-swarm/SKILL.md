@@ -29,9 +29,10 @@ This path is **unaffected** by utility-only delegation rules.
    - **`awaiting_host_execution` + `host_spawn_waves`** — execute waves via host agents.
    - **`preview: true` + `preview_token`** — cost over budget; confirm then re-call with token.
    - **`started: true`** (delegate mode only) — Threnody subprocess orchestrator running.
-4. **After each wave:** call `report_host_wave(swarm_id|host_run_id, wave, agents[])` with per-agent results (`spawn_id`, `success`, `touched_files`, optional `output_excerpt`).
-5. **Terminal wave:** set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`.
-6. Monitor:
+4. **After each wave:** call `report_host_wave` with `workspace_root` from the handoff (`workspace_root` / `learning_report_contract`) and per-agent results: `task_id`, `spawn_id`, `success`, `touched_files`, **`output_excerpt`** (1–2 sentence summary).
+5. **Mid-run expansion:** after scaffold/contract waves, call `expand_host_plan(discovered_files=[...])` or `report_host_wave(expand_plan=true, discovered_files=[...])` to spawn additional file-scoped agents.
+6. **Terminal wave:** set `terminal=true` and `outcome=accepted|revised|reworked|rejected`, or call `report_host_swarm_complete`. Verify `finalize.swarm_outcome.stored`.
+7. Monitor:
    - Host-native: `inspect_swarm` for status; optional `inspect_status`.
    - Delegate: `list_subtasks`, `resume_swarm_inspect`, `resume_swarm_confirm`.
 
@@ -41,7 +42,26 @@ This path is **unaffected** by utility-only delegation rules.
 - Pass each agent its `prompt`, `target_files`, `model`, and `subagent_type` from the handoff.
 - Do **not** use `Write`/`Edit` yourself on any `target_files` from the plan.
 - Do not follow `route_task`'s `direct_edit` hint while a handoff is active (`execution_hint.active_handoff` or pending `host_spawn_waves`).
-- After the wave: `report_host_wave` → `inspect_swarm`.
+- After the wave: `report_host_wave` (with `workspace_root` + `output_excerpt`) → `inspect_swarm`.
+
+## Wave report example
+
+```python
+report_host_wave(
+  swarm_id="<from handoff>",
+  wave=1,
+  workspace_root="<workspace_root from handoff>",
+  agents=[{
+    "task_id": "swarm-...:2",
+    "spawn_id": "<host-agent-id>",
+    "success": True,
+    "touched_files": ["styles.css"],
+    "output_excerpt": "Created card layout CSS with loading/error states",
+  }],
+)
+```
+
+Check `learning_enrichment` in the response when the server auto-fills excerpts from disk.
 
 ## Topology
 

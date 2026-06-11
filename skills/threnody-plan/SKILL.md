@@ -21,6 +21,8 @@ plan-only qualifiers
 
 **Always plan first:** multi-file, multi-concern, or parallel agent work
 
+Host-native plans auto-fan out to **one agent per file** when intent implies a webapp/fullstack stack (`heuristic_intent_templates`). Use `expand_host_plan` after scaffold waves if more files appear.
+
 ## Workflow
 
 ### 1. Classify

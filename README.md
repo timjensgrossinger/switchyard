@@ -203,7 +203,7 @@ Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
 |---|---|---|
 | 🎯 | **Tier routing** | Heuristic complexity scoring + `host_spawn` / `execution_hint` for host-native work |
 | 🧠 | **Learning loop** | Pattern tracking → draft agents → approval queue → auto-match future work |
-| 🐝 | **Swarm orchestration** | `execute_swarm` returns `host_spawn_waves` by default (`awaiting_host_execution`) |
+| 🐝 | **Swarm orchestration** | `execute_swarm` returns `host_spawn_waves` by default (`awaiting_host_execution`); heuristic intent fans out one agent per file; `expand_host_plan` for mid-run discovery |
 | 💾 | **Cross-session memory** | `memory_*` MCP tools backed by local SQLite |
 | 🔌 | **MCP-native** | ~43 tools over stdio JSON-RPC; works with any MCP-compatible host shell |
 | 🔀 | **Utility delegation** | Opt-in `execute_subtask` to OpenCode, Aider, local endpoints; host→host blocked |

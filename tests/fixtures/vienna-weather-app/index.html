@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Current weather conditions for Vienna, Austria"
+    />
+    <title>Vienna Weather</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="weather-app">
+      <article
+        class="weather-card weather-card--loading"
+        aria-labelledby="weather-city"
+        aria-busy="true"
+      >
+        <div
+          class="weather-loading"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading weather data"
+        >
+          <div class="weather-loading__spinner" aria-hidden="true"></div>
+          <p class="weather-loading__text">Fetching Vienna weather…</p>
+          <div class="weather-loading__skeleton" aria-hidden="true">
+            <div
+              class="weather-loading__skeleton-line weather-loading__skeleton-line--title"
+            ></div>
+            <div
+              class="weather-loading__skeleton-line weather-loading__skeleton-line--temp"
+            ></div>
+            <div class="weather-loading__skeleton-grid">
+              <div class="weather-loading__skeleton-block"></div>
+              <div class="weather-loading__skeleton-block"></div>
+              <div class="weather-loading__skeleton-block"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="weather-error" role="alert" aria-live="assertive">
+          <div class="weather-error__icon" aria-hidden="true">⚠️</div>
+          <h2 class="weather-error__title">Unable to load weather</h2>
+          <p class="weather-error__message" id="weather-error-message">
+            Something went wrong while fetching the latest conditions.
+          </p>
+          <button
+            type="button"
+            class="weather-error__retry"
+            id="weather-retry"
+            aria-label="Retry loading weather data"
+          >
+            Try again
+          </button>
+        </div>
+
+        <div class="weather-card__inner">
+          <div class="weather-content">
+            <header class="weather-header">
+              <h1 class="weather-header__city" id="weather-city">Vienna</h1>
+              <p class="weather-header__region">Austria</p>
+              <p class="weather-header__updated">
+                <time id="weather-updated" datetime="">Updated —</time>
+              </p>
+            </header>
+
+            <section class="weather-main" aria-label="Current conditions">
+              <div
+                class="weather-main__icon"
+                id="weather-icon"
+                role="img"
+                aria-label="Weather icon"
+              >
+                <span aria-hidden="true">☀️</span>
+              </div>
+
+              <p
+                class="weather-main__temperature"
+                aria-label="Current temperature"
+              >
+                <span id="weather-temperature">—</span
+                ><span class="weather-main__temperature-unit">°C</span>
+              </p>
+
+              <p class="weather-main__condition" id="weather-condition">
+                —
+              </p>
+            </section>
+
+            <section
+              class="weather-details"
+              aria-label="Weather details"
+            >
+              <div class="weather-detail">
+                <span class="weather-detail__label">Humidity</span>
+                <span class="weather-detail__value">
+                  <span id="weather-humidity">—</span
+                  ><span class="weather-detail__unit">%</span>
+                </span>
+              </div>
+
+              <div class="weather-detail">
+                <span class="weather-detail__label">Wind</span>
+                <span class="weather-detail__value">
+                  <span id="weather-wind">—</span
+                  ><span class="weather-detail__unit"> km/h</span>
+                </span>
+              </div>
+
+              <div class="weather-detail">
+                <span class="weather-detail__label">Feels like</span>
+                <span class="weather-detail__value">
+                  <span id="weather-feels-like">—</span
+                  ><span class="weather-detail__unit">°C</span>
+                </span>
+              </div>
+            </section>
+          </div>
+        </div>
+      </article>
+    </main>
+
+    <script src="api.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

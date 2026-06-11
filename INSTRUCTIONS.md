@@ -6,6 +6,9 @@
 4. For lone `route_task` results without a pending handoff, direct edits are allowed when `host_native_method` is `direct_edit`.
 5. Use `execute_subtask(provider_id=...)` only for utility backends when `delegation_utilities_enabled` is true.
 6. `execute_swarm` defaults to `host_native` — run returned waves in the host; no subprocess fanout.
+7. Host-native heuristic planning fans out **one agent per file** for webapp/fullstack intent or listed paths (`orchestrator.heuristic_intent_templates`, default true).
+8. After scaffold waves, call `expand_host_plan(discovered_files=[...])` or `report_host_wave(expand_plan=true)` for additional file agents.
+9. Report waves with `workspace_root` from handoff (`learning_report_contract`), per-agent `task_id`, `spawn_id`, `success`, `touched_files`, and `output_excerpt`; terminal reports must set `outcome` and check `finalize.swarm_outcome`.
 
 Same-host `execute_subtask` returns `HostNativeRequired`.
 

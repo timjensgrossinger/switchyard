@@ -108,6 +108,8 @@ orchestrator:
   # always = map-reduce even for small result sets.
   synthesis_map_reduce: auto
   synthesis_chunk_chars: 12000
+  # Fan out host-native plans to one agent per file when intent implies a multi-file app
+  heuristic_intent_templates: true
 
 resilience:
   retry:

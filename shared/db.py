@@ -3525,6 +3525,75 @@ class Database:
         state["workers"] = workers
         return state
 
+    def get_handoff_agent_snapshots(self, swarm_id: str) -> list[dict[str, object]]:
+        """Return latest per-worker handoff snapshots for a host-native run."""
+        normalized_swarm_id = str(swarm_id or "").strip()
+        if not normalized_swarm_id:
+            raise ValueError("swarm_id is required")
+        with self.conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT w.worker_index, w.snapshot_json, w.ts
+                FROM swarm_workers AS w
+                INNER JOIN (
+                    SELECT worker_index, MAX(id) AS max_id
+                    FROM swarm_workers
+                    WHERE swarm_id = ?
+                    GROUP BY worker_index
+                ) AS latest
+                    ON latest.max_id = w.id
+                WHERE w.swarm_id = ?
+                ORDER BY w.worker_index
+                """,
+                (normalized_swarm_id, normalized_swarm_id),
+            ).fetchall()
+        snapshots: list[dict[str, object]] = []
+        for worker_index, snapshot_json, ts in rows:
+            parsed = self._parse_json_field(snapshot_json, default={})
+            if not isinstance(parsed, dict):
+                parsed = {}
+            entry = dict(parsed)
+            entry["worker_index"] = int(worker_index)
+            entry["ts"] = float(ts)
+            snapshots.append(entry)
+        return snapshots
+
+    def get_swarm_events(
+        self,
+        swarm_id: str,
+        *,
+        event_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        """Return recent swarm audit events, optionally filtered by type."""
+        normalized_swarm_id = str(swarm_id or "").strip()
+        if not normalized_swarm_id:
+            raise ValueError("swarm_id is required")
+        capped_limit = max(1, min(int(limit), 500))
+        query = (
+            "SELECT event_type, payload, ts FROM swarm_events "
+            "WHERE swarm_id = ?"
+        )
+        params: list[object] = [normalized_swarm_id]
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(str(event_type).strip())
+        query += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(capped_limit)
+        with self.conn() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        events: list[dict[str, object]] = []
+        for event_type_val, payload, ts in rows:
+            parsed = self._parse_json_field(payload, default={})
+            events.append(
+                {
+                    "event_type": event_type_val,
+                    "payload": parsed if isinstance(parsed, dict) else {},
+                    "ts": float(ts),
+                }
+            )
+        return events
+
     def _get_full_payload(self, stable_ref: str) -> str | None:
         with self.conn() as conn:
             row = conn.execute(

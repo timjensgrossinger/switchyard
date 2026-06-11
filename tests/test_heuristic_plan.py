@@ -67,3 +67,47 @@ def test_build_heuristic_plan_numbered_fanout_parallel_wave() -> None:
     assert len(payload["subtasks"]) == 4
     assert payload["topology"] == "linear"
     assert payload["strategy"] == "parallel"
+
+
+CLAUDE_NEWS_TASK = (
+    "Build a small web app in sandbox/claude-news-app that checks for news about Claude. "
+    "Python backend with HTML, CSS, and JavaScript frontend."
+)
+
+
+def test_webapp_intent_without_explicit_paths_fans_out() -> None:
+    payload = build_heuristic_plan_payload(CLAUDE_NEWS_TASK, default_tier="medium")
+    subtasks = payload["subtasks"]
+    assert len(subtasks) == 4
+    paths = [st["target_file"] for st in subtasks]
+    assert paths == [
+        "sandbox/claude-news-app/app.py",
+        "sandbox/claude-news-app/templates/index.html",
+        "sandbox/claude-news-app/static/css/style.css",
+        "sandbox/claude-news-app/static/js/app.js",
+    ]
+
+
+def test_fullstack_intent_builds_contract_first_dag() -> None:
+    task = (
+        "Build a fullstack todo app in sandbox/todo under openapi contract "
+        "with parallel frontend and backend"
+    )
+    payload = build_heuristic_plan_payload(task, default_tier="medium")
+    subtasks = payload["subtasks"]
+    assert len(subtasks) == 4
+    assert payload["topology"] == "dag"
+    by_file = {st["target_file"]: st for st in subtasks}
+    assert by_file["sandbox/todo/openapi.yaml"]["depends_on"] == []
+    assert by_file["sandbox/todo/app.py"]["depends_on"] == [1]
+    assert by_file["sandbox/todo/templates/index.html"]["depends_on"] == [1]
+    assert by_file["sandbox/todo/tests/integration.py"]["depends_on"] == [2, 3]
+
+
+def test_intent_templates_disabled_keeps_single_subtask() -> None:
+    payload = build_heuristic_plan_payload(
+        CLAUDE_NEWS_TASK,
+        default_tier="medium",
+        intent_templates=False,
+    )
+    assert len(payload["subtasks"]) == 1
