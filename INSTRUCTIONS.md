@@ -6,32 +6,34 @@ current `routing_policy` in `config.yaml`.
 
 ## Routing policy
 
-Configure instruction strictness without editing generated instruction files by
+Configure coordination guard vs advisory routing without editing generated instruction files by
 hand:
 
 ```yaml
 routing_policy:
-  mode: default # default | strict | advisory | custom
+  mode: default # default | guarded | advisory | custom  (strict is deprecated → guarded)
   shells:
     github-copilot-cli:
       mode: advisory
     claude-code:
-      mode: strict
+      mode: guarded
 ```
 
 `mode: default` uses Threnody recommendations:
 
 | Shell | Default behavior |
 |---|---|
-| `claude-code` | Strict routing, low-tier `execute_subtask`, transparency tables, and Claude edit/write hook guidance |
+| `claude-code` | Guarded coordination — mandatory `route_task`, host-native first after routing, transparency tables, and Claude edit/write hook |
 | `github-copilot-cli` | Advisory routing; direct edits are allowed by default |
 | `gemini-cli` | Advisory routing |
 | `cursor` | Advisory routing |
 | `codex` | Advisory routing |
 
-Use `mode: strict` to make routing mandatory in generated instructions for all
+Use `mode: guarded` to require `route_task` before code edits in generated instructions for all
 shells. Use `mode: advisory` to make routing non-mandatory for all shells. Use
 `mode: custom` with per-shell overrides when you want mixed behavior.
+
+**Migration:** `mode: strict` is accepted as a deprecated alias for `guarded` (a warning is logged). Re-run `./install.sh` after changing guarded/advisory to refresh managed instruction blocks and the Claude hook entry.
 
 Per-shell profiles may set:
 
@@ -41,7 +43,7 @@ routing_policy:
   shells:
     github-copilot-cli:
       route_task_mandatory: true
-      low_tier_execute_subtask: true
+      low_tier_execute_subtask: false
       agent_transparency_required: true
       direct_edit_hooks: false
       tier_model_mapping:
@@ -87,6 +89,12 @@ The managed block markers remain stable:
 
 Cursor's `.mdc` rule file is written as a standalone generated document instead
 of a marked block.
+
+## Cost discipline surfaces
+
+- **Host hooks:** Claude guarded mode installs `shell/threnody-routing-hook.sh` (see [docs/HOOKS.md](docs/HOOKS.md)).
+- **Routing trust:** run `python3 -m shared.routing_report --write-docs` for fixture accuracy stats.
+- **Learned agents:** approval-gated drafts may land in the **cost_lane** when low-tier patterns recur with strong quality — prefer free/low execution metadata in drafts.
 
 ## Legal and provider terms
 

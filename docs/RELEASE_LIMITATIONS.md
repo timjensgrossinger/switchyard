@@ -28,16 +28,33 @@ Plain-language constraints that matter in practice:
 
 ## Comparison Boundaries
 
-Threnody is not positioned as a replacement for a specific AI coding tool.
-It is a local routing and orchestration layer for operators who already use one
-or more AI CLIs. Do not compare against audit-grade compliance orchestrators on
-features Threnody does not ship (HMAC audit chains, regulatory export bundles,
-signed agent cards, etc.).
+Threnody is not positioned as a replacement for a specific AI coding tool or a
+full agentic platform (for example Ruflo-style federation, vector RAG marketplaces,
+web UI goal planners, or plugin ecosystems). It is a **local-first MCP meta-harness**
+for operators who already use one or more AI CLIs — the host shell executes work;
+Threnody coordinates routing, swarms, memory, and spend discipline.
+
+Do not compare against audit-grade compliance orchestrators on features Threnody
+does not ship (HMAC audit chains, regulatory export bundles, signed agent cards,
+cross-machine federation meshes, etc.).
+
+### Explicit non-goals (vs full meta-harness platforms)
+
+- Agent federation across machines or trust boundaries
+- Hosted web UI or GOAP-style goal planner frontends
+- Plugin marketplace at platform scale (30+ plugins)
+- Vector RAG / HNSW knowledge graph as a core product surface
+- WASM sandbox agents or Rust-native inference engines
+- Background worker daemons with dozens of auto-triggered hooks
+
+Threnody focuses on: **local MCP coordination**, **host-native execution**,
+**eval-backed tier routing**, **optional cross-CLI delegation**, and
+**operator-visible spend telemetry**.
 
 Comparisons should be limited to observable behavior:
 
 - Local-first MCP routing across installed CLIs.
-- Cost-aware tier selection.
+- Cost-aware tier selection and spend telemetry (`inspect_spend`, `threnody gain`).
 - Provider diagnostics and explicit readiness reasons.
 - Approval-gated learned agents.
 - Workspace write auditing and preview handling.

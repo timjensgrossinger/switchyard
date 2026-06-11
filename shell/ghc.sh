@@ -418,6 +418,7 @@ _tgs_usage() {
     cat >&2 <<'EOF'
 Usage:
   threnody inspect status [--project PATH] [--details]
+  threnody inspect spend [--since WINDOW] [--json]
   threnody inspect task <task_id> [--details]
   threnody inspect approvals [--project PATH] [--limit N] [--details]
   threnody inspect write-audit [--limit N]
@@ -441,6 +442,7 @@ Usage:
 Examples:
   threnody inspect status --project .
   threnody inspect status --project . --details
+  threnody inspect spend --since 7d
   threnody inspect task execute-1234
   threnody inspect approvals --project .
   threnody inspect write-audit --limit 20
@@ -1055,6 +1057,62 @@ else:
 PY
 }
 
+_tgs_inspect_spend() {
+    local since="7d"
+    local json=0
+    local pybin=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --since)
+                [[ $# -lt 2 ]] && { echo "threnody inspect spend: --since requires a value" >&2; return 1; }
+                since="$2"
+                shift 2
+                ;;
+            --json)
+                json=1
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: threnody inspect spend [--since 7d|30d|24h|all] [--json]" >&2
+                return 0
+                ;;
+            *)
+                echo "threnody inspect spend: unknown argument: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    pybin=$(_tgs_python) || return 1
+    ROUTER_DIR="$_ROUTER_DIR" "$pybin" - "$since" "$json" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+base = Path(os.environ.get("ROUTER_DIR", "")).expanduser().resolve()
+sys.path.insert(0, str(base))
+import mcp_server
+
+since = sys.argv[1] if len(sys.argv) > 1 else "7d"
+as_json = sys.argv[2] == "1" if len(sys.argv) > 2 else False
+result = mcp_server.inspect_spend(since)
+
+if as_json:
+    print(json.dumps(result, indent=2))
+    raise SystemExit(0)
+
+totals = result.get("totals", {})
+print(
+    f"spend window={result.get('window', since)} "
+    f"subtasks={totals.get('subtask_count', 0)} "
+    f"est=${float(totals.get('est_cost_usd') or 0):.6f} "
+    f"savings=${float(totals.get('savings_usd') or 0):.6f} "
+    f"free={totals.get('free_subtask_pct', 0)}%"
+)
+print(f"details: {result.get('cli_hint', 'threnody gain --since 7d')}")
+PY
+}
+
 threnody() {
     local area="${1:-}"
     shift || true
@@ -1125,6 +1183,7 @@ PY
             shift || true
             case "$mode" in
                 status) _tgs_inspect_status "$@" ;;
+                spend) _tgs_inspect_spend "$@" ;;
                 task) _tgs_inspect_task "$@" ;;
                 approvals) _tgs_inspect_approvals "$@" ;;
                 write-audit) _tgs_inspect_write_audit "$@" ;;

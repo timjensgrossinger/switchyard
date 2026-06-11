@@ -24,6 +24,7 @@ python3 -m py_compile mcp_server.py shared/router.py
 threnody eval run
 threnody eval run --filter low,urgency
 python3 -m shared.routing_eval       # repo-local fallback
+python3 -m shared.routing_report --write-docs  # operator ROUTING_ACCURACY.md
 
 # Refresh local eval baseline
 threnody eval baseline
@@ -182,7 +183,7 @@ The planner is advisory — it only returns decomposition metadata. The orchestr
 - **LLM output parsing**: reuse `_extract_json(raw)` from `shared/planner.py` — fenced JSON first, then brace-balancing fallback.
 - **Pattern utilities**: reuse `pattern_hash` / `normalize_pattern` from `shared/agents.py`.
 - **Config template vs installed**: `config.yaml` in the repo root is the template only. Runtime reads `~/.local/lib/threnody/config.yaml`. `install.sh` creates the installed copy only when absent — editing the template does not overwrite an existing install.
-- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction strictness: `strict` (default for Claude Code) enforces mandatory `route_task` calls; `advisory` (default for GitHub Copilot CLI) renders guidance only.
+- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction enforcement: `guarded` (default for Claude Code) requires `route_task` before code edits; `advisory` (default for GitHub Copilot CLI) renders guidance only. `strict` is a deprecated alias for `guarded`.
 - **`execute_subtask` surgical edit modes**: use `mode=` to control how `target_file` is written:
   - `write` (default) — model output written verbatim. Safe for new files only.
   - `rewrite` — injects current file content, asks model for complete rewrite, guards against fragments with a length-ratio check (rejects if output < 50% of original). Max file: 32 KiB.
@@ -214,14 +215,14 @@ Routing eval fixtures live in `tests/eval/` organised by tier (`low_tier/`, `med
 
 `routing_exceptions` is an exemption list, not a code-file allowlist. Add only extra non-code surfaces there; do not enumerate code languages or config formats.
 
-`routing_policy` controls how strict routing instructions are per shell. Default: `strict` for Claude Code, `advisory` for all others. To override:
+`routing_policy` controls guarded vs advisory routing instructions per shell. Default: `guarded` for Claude Code, `advisory` for all others. To override:
 
 ```yaml
 routing_policy:
   mode: custom
   shells:
     claude-code:
-      mode: strict
+      mode: guarded
     github-copilot-cli:
       mode: advisory
 ```
@@ -233,4 +234,4 @@ python3 -m shared.instructions claude-code --config ~/.local/lib/threnody/config
 python3 -m shared.instructions github-copilot-cli --config ~/.local/lib/threnody/config.yaml
 ```
 
-See `KNOWN_BOTTLENECKS.md` for current performance constraints — notably: serial planner/synthesis stages, single-lane speculative fallback, and sequential warm-path eval.
+See `KNOWN_BOTTLENECKS.md` for current performance constraints — notably: serial planner/synthesis stages (unchanged), configurable speculation pool (`parallelism.speculation_workers`), and warm-path eval batch parallelism (`parallelism.warm_path_workers`).

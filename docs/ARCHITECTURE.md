@@ -36,6 +36,19 @@ the operator opts in via `providers.router_only_allow_execution`.
 `route_task` returns `execution_hint` with `mode: host_native | delegate` and
 `delegation_targets` listing routable backends for the tier.
 
+## Guarded vs advisory routing
+
+| Mode | Meaning |
+|------|---------|
+| **guarded** | Require `route_task` before non-exempt code edits; Claude Code installs PreToolUse hooks by default |
+| **advisory** | Recommend routing for non-trivial work; direct edits allowed without a guard |
+
+Guarded mode is a **coordination gate**, not a delegation mandate. After routing,
+follow `execution_hint` — host-native execution first; `execute_subtask` only when
+delegating to another backend.
+
+`mode: strict` in `config.yaml` is a deprecated alias for `guarded`.
+
 ## Trust Boundaries
 
 - Host shells are trusted only as local MCP clients. Caller detection is used

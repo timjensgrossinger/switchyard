@@ -15,8 +15,10 @@ def cmd_check(args):
     db = Database(db_path)
     try:
         db._check_integrity_and_recover()
+        rebuilt = db.rebuild_memory_fts()
         print(f"integrity_ok: {db.last_integrity_ok}")
         print(f"db_path: {db_path}")
+        print(f"memory_fts_rows: {rebuilt}")
         last_backup = db.last_backup_ts if db.last_backup_ts is not None else "never"
         print(f"last_backup: {last_backup}")
         if not db.last_integrity_ok:

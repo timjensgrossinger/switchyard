@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from typing import Any
 
@@ -146,6 +147,141 @@ def _default_swarm_project_id(project_id: str | None) -> str:
     return str(BASE_DIR.resolve())
 
 
+def _value_to_search_text(value: Any, value_json: str) -> str:
+    if isinstance(value, str):
+        return value
+    return value_json
+
+
+def _sync_memory_fts(
+    conn: Any,
+    *,
+    scope: str,
+    project_id: str,
+    task_id: str,
+    key: str,
+    value_text: str,
+) -> None:
+    conn.execute(
+        """
+        DELETE FROM memory_fts
+        WHERE scope = ? AND project_id = ? AND task_id = ? AND key = ?
+        """,
+        (scope, project_id, task_id, key),
+    )
+    conn.execute(
+        """
+        INSERT INTO memory_fts(scope, project_id, task_id, key, value_text)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (scope, project_id, task_id, key, value_text),
+    )
+
+
+def _delete_memory_fts(
+    conn: Any,
+    *,
+    scope: str,
+    project_id: str,
+    task_id: str,
+    key: str,
+) -> None:
+    conn.execute(
+        """
+        DELETE FROM memory_fts
+        WHERE scope = ? AND project_id = ? AND task_id = ? AND key = ?
+        """,
+        (scope, project_id, task_id, key),
+    )
+
+
+_SECRET_SNIPPET_RE = re.compile(
+    r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*\S+"
+)
+
+
+def _redact_snippet(text: str) -> str:
+    return _SECRET_SNIPPET_RE.sub(r"\1=<redacted>", text)
+
+
+def _escape_fts_query(query: str) -> str:
+    tokens = re.findall(r"[\w.-]+", query.strip())
+    if not tokens:
+        raise MemoryRequestError("query must contain at least one searchable token")
+    escaped: list[str] = []
+    for token in tokens:
+        safe = token.replace('"', '""')
+        escaped.append(f'"{safe}"')
+    return " ".join(escaped)
+
+
+def memory_search(
+    query: str,
+    *,
+    scope: str | None = None,
+    project_id: str | None = None,
+    limit: int = 10,
+    db: Database | None = None,
+) -> list[dict[str, Any]]:
+    """Search memory values via local FTS5 (no embeddings)."""
+    if not isinstance(query, str) or not query.strip():
+        raise MemoryRequestError("query is required")
+    if limit < 1:
+        raise MemoryRequestError("limit must be at least 1")
+    if limit > 50:
+        limit = 50
+
+    normalized_scope: str | None = None
+    normalized_project_id: str | None = None
+    if scope is not None:
+        normalized_scope = _normalize_scope(scope)
+    if project_id is not None and str(project_id).strip():
+        normalized_project_id = str(project_id).strip()
+        if normalized_scope is None:
+            normalized_scope = "project"
+
+    fts_query = _escape_fts_query(query)
+    database = _get_db(db)
+    where = ["memory_fts MATCH ?"]
+    params: list[Any] = [fts_query]
+    if normalized_scope is not None:
+        where.append("memory_fts.scope = ?")
+        params.append(normalized_scope)
+    if normalized_project_id is not None:
+        where.append("memory_fts.project_id = ?")
+        params.append(normalized_project_id)
+
+    sql = f"""
+        SELECT
+            memory_fts.scope,
+            memory_fts.project_id,
+            memory_fts.task_id,
+            memory_fts.key,
+            snippet(memory_fts, 4, '[', ']', '...', 48) AS snippet,
+            bm25(memory_fts) AS rank
+        FROM memory_fts
+        WHERE {' AND '.join(where)}
+        ORDER BY rank
+        LIMIT ?
+    """
+    params.append(limit)
+
+    with database.conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    hits: list[dict[str, Any]] = []
+    for row_scope, row_project_id, row_task_id, key, snippet, rank in rows:
+        hits.append({
+            "scope": str(row_scope),
+            "project_id": _public_identifier(str(row_project_id or "")),
+            "task_id": _public_identifier(str(row_task_id or "")),
+            "key": str(key),
+            "snippet": _redact_snippet(str(snippet or "")),
+            "rank": float(rank) if rank is not None else 0.0,
+        })
+    return hits
+
+
 def _memory_envelope(
     *,
     key: str,
@@ -218,6 +354,14 @@ def memory_set(
                 value_size,
                 updated_at,
             ),
+        )
+        _sync_memory_fts(
+            conn,
+            scope=normalized_scope,
+            project_id=normalized_project_id,
+            task_id=normalized_task_id,
+            key=normalized_key,
+            value_text=_value_to_search_text(value, value_json),
         )
 
     return _memory_envelope(
@@ -369,6 +513,13 @@ def memory_delete(
                 normalized_key,
             ),
         )
+        _delete_memory_fts(
+            conn,
+            scope=normalized_scope,
+            project_id=normalized_project_id,
+            task_id=normalized_task_id,
+            key=normalized_key,
+        )
     return {"deleted": True}
 
 
@@ -432,4 +583,5 @@ __all__ = [
     "memory_refresh_swarm_state_from_db",
     "memory_set",
     "memory_set_swarm_state",
+    "memory_search",
 ]

@@ -17,21 +17,23 @@ def _config_from_yaml(payload: str) -> TGsConfig:
         return TGsConfig.from_yaml(config_path)
 
 
-def test_claude_default_instructions_are_strict() -> None:
+def test_claude_default_instructions_are_guarded() -> None:
     body = render_shell_instructions(TGsConfig.defaults(), "claude-code")
 
     assert "These instructions apply only to **Claude Code**" in body
     assert "meta-harness" in body
-    assert "Routing mode: strict" in body
-    assert "ALWAYS call `route_task` before writing or editing code or other non-exempt project files." in body
+    assert "Routing mode: guarded" in body
+    assert "`route_task` or `decompose_task`" in body
+    assert "follow `execution_hint`" in body
     assert "Routing exemptions" in body
     assert "`.md`" in body
     assert "`.mdc`" in body
     assert "All other filetypes remain routed by default" in body
-    assert "use `execute_subtask` only when delegating" in body
+    assert "prefer host-native edits or the Task tool" in body
     assert "Agent transparency is required" in body
     assert "PreToolUse" in body
     assert "validate_routing_guard" in body
+    assert "guarded routing" in body
 
 
 def test_copilot_default_instructions_are_advisory() -> None:
@@ -48,18 +50,26 @@ def test_copilot_default_instructions_are_advisory() -> None:
     assert "validate_routing_guard" not in body
 
 
-def test_copilot_strict_mode_emits_mandatory_instructions_without_hooks() -> None:
-    cfg = _config_from_yaml("routing_policy:\n  mode: strict\n")
+def test_copilot_guarded_mode_emits_mandatory_instructions_without_hooks() -> None:
+    cfg = _config_from_yaml("routing_policy:\n  mode: guarded\n")
     body = render_shell_instructions(cfg, "github-copilot-cli")
 
-    assert "Routing mode: strict" in body
-    assert "ALWAYS call `route_task` before writing or editing code or other non-exempt project files." in body
+    assert "Routing mode: guarded" in body
+    assert "`route_task` or `decompose_task`" in body
     assert "Agent transparency is required" in body
     assert "PreToolUse" not in body
     assert "validate_routing_guard" not in body
 
 
-def test_custom_copilot_strict_opt_in_emits_mandatory_instructions() -> None:
+def test_strict_alias_renders_guarded_instructions() -> None:
+    cfg = _config_from_yaml("routing_policy:\n  mode: strict\n")
+    body = render_shell_instructions(cfg, "github-copilot-cli")
+
+    assert "Routing mode: guarded" in body
+    assert "Routing mode: strict" not in body
+
+
+def test_custom_copilot_guarded_opt_in_emits_mandatory_instructions() -> None:
     cfg = _config_from_yaml(
         "\n".join(
             [
@@ -75,9 +85,9 @@ def test_custom_copilot_strict_opt_in_emits_mandatory_instructions() -> None:
     )
     body = render_shell_instructions(cfg, "copilot")
 
-    assert "Routing mode: strict" in body
-    assert "ALWAYS call `route_task` before writing or editing code or other non-exempt project files." in body
-    assert "For low-tier work, use `execute_subtask` only when delegating" in body
+    assert "Routing mode: guarded" in body
+    assert "`route_task` or `decompose_task`" in body
+    assert "prefer host-native edits or the Task tool" in body
     assert "PreToolUse" not in body
 
 

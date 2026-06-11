@@ -1511,6 +1511,29 @@ class Orchestrator:
         if not backend_call:
             backend_call = self._planner._backend.call
 
+        mode = (getattr(self._config, "synthesis_map_reduce", "auto") or "auto").strip().lower()
+        chunk_chars = max(
+            1000,
+            int(getattr(self._config, "synthesis_chunk_chars", 12000) or 12000),
+        )
+        total_chars = sum(len(output) for output in results.values())
+        use_map_reduce = mode == "always" or (
+            mode == "auto" and total_chars > chunk_chars
+        )
+
+        if mode == "off" or not use_map_reduce:
+            return self._synthesise_single_pass(task, results, backend_call)
+
+        return self._synthesise_map_reduce(task, results, backend_call, chunk_chars)
+
+    def _synthesise_single_pass(
+        self,
+        task: str,
+        results: dict[int, str],
+        backend_call,
+        *,
+        section_label: str = "AGENT OUTPUTS",
+    ) -> str | None:
         results_text = ""
         for st_id, output in sorted(results.items()):
             results_text += f"\n--- Agent #{st_id} ---\n{output}\n"
@@ -1519,15 +1542,103 @@ class Orchestrator:
             f"You are a synthesis agent. Multiple coding agents worked on subtasks "
             f"of a larger task. Review their outputs and produce a unified summary.\n\n"
             f"ORIGINAL TASK: {task}\n\n"
-            f"AGENT OUTPUTS:\n{results_text}\n\n"
+            f"{section_label}:\n{results_text}\n\n"
             f"Instructions:\n"
             f"- Summarise what each agent accomplished\n"
             f"- Flag any conflicts or inconsistencies\n"
             f"- Note anything missed or needing follow-up\n"
             f"- Be concise — bullet points preferred"
         )
-        return backend_call(prompt, self._config.planner_model,
-                            self._config.planner_timeout)
+        return backend_call(
+            prompt,
+            self._config.planner_model,
+            self._config.planner_timeout,
+        )
+
+    @staticmethod
+    def _chunk_synthesis_results(
+        results: dict[int, str],
+        chunk_chars: int,
+    ) -> list[list[tuple[int, str]]]:
+        chunks: list[list[tuple[int, str]]] = []
+        current: list[tuple[int, str]] = []
+        current_size = 0
+        for st_id, output in sorted(results.items()):
+            entry_size = len(output) + 32
+            if current and current_size + entry_size > chunk_chars:
+                chunks.append(current)
+                current = []
+                current_size = 0
+            current.append((st_id, output))
+            current_size += entry_size
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _summarise_synthesis_chunk(
+        self,
+        task: str,
+        chunk: list[tuple[int, str]],
+        backend_call,
+    ) -> str:
+        results_text = ""
+        for st_id, output in chunk:
+            results_text += f"\n--- Agent #{st_id} ---\n{output}\n"
+        prompt = (
+            f"You are a synthesis agent. Summarize this subset of subtask outputs "
+            f"from a larger task.\n\n"
+            f"ORIGINAL TASK: {task}\n\n"
+            f"AGENT OUTPUTS (partial):\n{results_text}\n\n"
+            f"Instructions:\n"
+            f"- Summarise what each agent accomplished\n"
+            f"- Flag conflicts or inconsistencies within this subset\n"
+            f"- Be concise — bullet points preferred"
+        )
+        summary = backend_call(
+            prompt,
+            self._config.planner_model,
+            self._config.planner_timeout,
+        )
+        return summary or ""
+
+    def _synthesise_map_reduce(
+        self,
+        task: str,
+        results: dict[int, str],
+        backend_call,
+        chunk_chars: int,
+    ) -> str | None:
+        chunks = self._chunk_synthesis_results(results, chunk_chars)
+        mode = (getattr(self._config, "synthesis_map_reduce", "auto") or "auto").strip().lower()
+        if len(chunks) <= 1 and mode != "always":
+            return self._synthesise_single_pass(task, results, backend_call)
+
+        max_workers = max(1, int(self._config.parallelism.max_workers or 1))
+        workers = min(len(chunks), max_workers)
+        summaries: dict[int, str] = {}
+
+        def _map_chunk(index: int, chunk: list[tuple[int, str]]) -> tuple[int, str]:
+            return index, self._summarise_synthesis_chunk(task, chunk, backend_call)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_map_chunk, index, chunk): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(futures):
+                index, summary = future.result()
+                summaries[index] = summary
+
+        merged_results = {
+            index + 1: summaries[index]
+            for index in sorted(summaries)
+        }
+        return self._synthesise_single_pass(
+            task,
+            merged_results,
+            backend_call,
+            section_label="CHUNK SUMMARIES",
+        )
 
     def to_fleet_waves(self, plan: ExecutionPlan) -> list[dict]:
         """Format an ExecutionPlan as /fleet-ready wave objects."""

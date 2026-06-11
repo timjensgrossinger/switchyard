@@ -84,6 +84,67 @@ def test_plan_cache_rejects_non_serializable_payloads() -> None:
             db.close()
 
 
+def test_plan_lookup_reports_miss() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = Database(Path(f.name))
+        lookup = db.plan_lookup("missing task")
+        assert lookup.status == "miss"
+        assert lookup.plan is None
+        db.close()
+
+
+def test_plan_lookup_expired_entry() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = Database(Path(f.name), plan_ttl_hours=0)
+        plan = {"subtasks": [{"id": 1, "description": "test", "tier": "low"}]}
+        db.plan_put("expired task", plan, "sonnet")
+        lookup = db.plan_lookup("expired task")
+        assert lookup.status == "expired"
+        assert db.plan_get("expired task") is None
+        db.close()
+
+
+def test_plan_lookup_invalidates_stale_schema_version(monkeypatch) -> None:
+    import json
+    import time
+
+    monkeypatch.setattr("shared.db.CURRENT_PLAN_SCHEMA_VERSION", 2)
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = Database(Path(f.name))
+        plan = {"subtasks": [{"id": 1, "description": "test", "tier": "low"}]}
+        key = db._plan_key("stale schema task")
+        with db.conn() as conn:
+            conn.execute(
+                "INSERT INTO plan_cache "
+                "(key, task_hash, plan_json, model, plan_schema_version, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (key, db._key("stale schema task"), json.dumps(plan), "sonnet", 1, time.time()),
+            )
+        lookup = db.plan_lookup("stale schema task")
+        assert lookup.status == "schema_invalid"
+        assert lookup.plan_schema_version == 1
+        assert db.plan_get("stale schema task") is None
+        db.close()
+
+
+def test_plan_put_stores_current_schema_version() -> None:
+    from shared.config import CURRENT_PLAN_SCHEMA_VERSION
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = Database(Path(f.name))
+        plan = {"subtasks": [{"id": 1, "description": "test", "tier": "low"}]}
+        db.plan_put("schema task", plan, "sonnet")
+        key = db._plan_key("schema task")
+        with db.conn() as conn:
+            row = conn.execute(
+                "SELECT plan_schema_version FROM plan_cache WHERE key = ?",
+                (key,),
+            ).fetchone()
+        assert row is not None
+        assert int(row[0]) == CURRENT_PLAN_SCHEMA_VERSION
+        db.close()
+
+
 def test_artifact_persistence() -> None:
     """Artifacts should round-trip with scoped lookup and compact envelopes."""
     with tempfile.NamedTemporaryFile(suffix=".db") as f:

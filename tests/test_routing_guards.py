@@ -26,9 +26,29 @@ from shared.config import TGsConfig
 
 
 class SelectionRegistry:
-    def __init__(self, *, provider: str = "GitHub Copilot", model: str = "gpt-5-mini") -> None:
+    def __init__(
+        self,
+        *,
+        provider: str = "GitHub Copilot",
+        model: str = "gpt-5-mini",
+        delegation_targets: list[str] | None = None,
+    ) -> None:
         self.provider = provider
         self.model = model
+        self.delegation_targets = delegation_targets or ["github-copilot", "codex"]
+
+    def _ordered_execution_candidates(
+        self,
+        tier: str,
+        *,
+        caller: str | None = None,
+        caller_allowlists: dict[str, list[str]] | None = None,
+    ) -> tuple[list[SimpleNamespace], None]:
+        del tier, caller, caller_allowlists
+        return (
+            [SimpleNamespace(name=name) for name in self.delegation_targets],
+            None,
+        )
 
     def select_provider_for_tier(
         self,
@@ -213,7 +233,7 @@ def test_routing_guard_migration_backfills_unique_guard_keys() -> None:
             db.close()
 
 
-def test_route_task_issues_low_tier_execute_subtask_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_task_issues_low_tier_direct_guard_for_host(monkeypatch: pytest.MonkeyPatch) -> None:
     with tempfile.TemporaryDirectory() as td:
         cfg, db = _prepare_db(td)
         monkeypatch.chdir(ROOT)
@@ -234,10 +254,11 @@ def test_route_task_issues_low_tier_execute_subtask_guard(monkeypatch: pytest.Mo
 
         result = mcp_server.handle_route_task({"task": "fix shared/db.py", "cwd": str(ROOT)})
 
-        assert result["routing_guard"]["mode"] == ROUTING_GUARD_MODE_EXECUTE_SUBTASK
+        assert result["routing_guard"]["mode"] == ROUTING_GUARD_MODE_DIRECT
+        assert result["execution_hint"]["mode"] == "host_native"
         stored = db.routing_guard_get(caller="claude-code", cwd=str(ROOT))
         assert stored is not None
-        assert stored["mode"] == ROUTING_GUARD_MODE_EXECUTE_SUBTASK
+        assert stored["mode"] == ROUTING_GUARD_MODE_DIRECT
 
 
 def test_validate_routing_guard_denies_without_guard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,7 +277,9 @@ def test_validate_routing_guard_denies_without_guard(monkeypatch: pytest.MonkeyP
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_validate_routing_guard_denies_low_tier_direct_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_routing_guard_allows_low_tier_direct_edit_after_host_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with tempfile.TemporaryDirectory() as td:
         cfg, db = _prepare_db(td)
         monkeypatch.chdir(ROOT)
@@ -282,8 +305,8 @@ def test_validate_routing_guard_denies_low_tier_direct_edit(monkeypatch: pytest.
             "tool_name": "Edit",
         })
 
-        assert result["valid"] is False
-        assert "execute_subtask" in result["reason"]
+        assert result["valid"] is True
+        assert result["mode"] == ROUTING_GUARD_MODE_DIRECT
 
 
 def test_route_task_skips_guard_for_exempt_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -821,9 +844,8 @@ def test_install_writes_claude_routing_hook() -> None:
 
         assert managed
         hook = managed[0]["hooks"][0]
-        assert hook["type"] == "mcp_tool"
-        assert hook["server"] == "Threnody"
-        assert hook["tool"] == "validate_routing_guard"
+        assert hook["type"] == "command"
+        assert "threnody-routing-hook.sh" in hook["command"]
 
 
 def test_install_keeps_claude_routing_hook_on_policy_parse_error() -> None:
@@ -922,11 +944,11 @@ def test_install_removes_claude_routing_hook_when_policy_disables_it() -> None:
         assert "hooks" not in settings
 
 
-def test_soft_hint_when_not_strict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """execute_subtask_guard_strict=False returns valid:True with hint instead of hard deny."""
+def test_route_task_issues_execute_subtask_guard_for_delegate_low_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with tempfile.TemporaryDirectory() as td:
         cfg, db = _prepare_db(td)
-        cfg.execute_subtask_guard_strict = False
         monkeypatch.chdir(ROOT)
         router = SimpleNamespace(
             classify=lambda _task: SimpleNamespace(
@@ -940,14 +962,60 @@ def test_soft_hint_when_not_strict(monkeypatch: pytest.MonkeyPatch) -> None:
         registry = SelectionRegistry()
 
         monkeypatch.setattr(mcp_server, "_ensure_init", lambda: _stub_init(cfg, db, router=router))
-        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda: registry)
-        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "claude-code")
+        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda *_a, **_k: registry)
+        monkeypatch.setattr(
+            mcp_server,
+            "_delegation_targets_for_tier",
+            lambda *_a, **_k: ["github-copilot", "codex"],
+        )
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "external-caller")
 
-        mcp_server.handle_route_task({"task": "fix shared/db.py", "cwd": str(ROOT)})
+        result = mcp_server.handle_route_task({
+            "task": "fix shared/db.py",
+            "cwd": str(ROOT),
+            "caller": "external-caller",
+        })
+
+        assert result["execution_hint"]["mode"] == "delegate"
+        assert result["routing_guard"]["mode"] == ROUTING_GUARD_MODE_EXECUTE_SUBTASK
+
+
+def test_soft_hint_when_delegate_guard_not_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """execute_subtask_guard_strict=False returns valid:True with hint instead of hard deny."""
+    with tempfile.TemporaryDirectory() as td:
+        cfg, db = _prepare_db(td)
+        assert cfg.execute_subtask_guard_strict is False
+        monkeypatch.chdir(ROOT)
+        router = SimpleNamespace(
+            classify=lambda _task: SimpleNamespace(
+                tier="low",
+                score=0.21,
+                reason="low-tier task",
+                agents=2,
+                override=False,
+            )
+        )
+        registry = SelectionRegistry()
+
+        monkeypatch.setattr(mcp_server, "_ensure_init", lambda: _stub_init(cfg, db, router=router))
+        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda *_a, **_k: registry)
+        monkeypatch.setattr(
+            mcp_server,
+            "_delegation_targets_for_tier",
+            lambda *_a, **_k: ["github-copilot", "codex"],
+        )
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "external-caller")
+
+        mcp_server.handle_route_task({
+            "task": "fix shared/db.py",
+            "cwd": str(ROOT),
+            "caller": "external-caller",
+        })
         result = mcp_server.handle_validate_routing_guard({
             "cwd": str(ROOT),
             "target_file": str(ROOT / "shared" / "db.py"),
             "tool_name": "Edit",
+            "caller": "external-caller",
         })
 
         assert result["valid"] is True
@@ -955,12 +1023,11 @@ def test_soft_hint_when_not_strict(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "hint" in result
 
 
-def test_hard_deny_unchanged_when_strict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default execute_subtask_guard_strict=True still hard-denies Edit/Write."""
+def test_hard_deny_when_execute_subtask_guard_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """execute_subtask_guard_strict=True hard-denies delegate low-tier Edit/Write."""
     with tempfile.TemporaryDirectory() as td:
         cfg, db = _prepare_db(td)
-        # default: execute_subtask_guard_strict = True
-        assert cfg.execute_subtask_guard_strict is True
+        cfg.execute_subtask_guard_strict = True
         monkeypatch.chdir(ROOT)
         router = SimpleNamespace(
             classify=lambda _task: SimpleNamespace(
@@ -974,14 +1041,24 @@ def test_hard_deny_unchanged_when_strict(monkeypatch: pytest.MonkeyPatch) -> Non
         registry = SelectionRegistry()
 
         monkeypatch.setattr(mcp_server, "_ensure_init", lambda: _stub_init(cfg, db, router=router))
-        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda: registry)
-        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "claude-code")
+        monkeypatch.setattr(mcp_server, "_get_registry_with_config", lambda *_a, **_k: registry)
+        monkeypatch.setattr(
+            mcp_server,
+            "_delegation_targets_for_tier",
+            lambda *_a, **_k: ["github-copilot", "codex"],
+        )
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "external-caller")
 
-        mcp_server.handle_route_task({"task": "fix shared/db.py", "cwd": str(ROOT)})
+        mcp_server.handle_route_task({
+            "task": "fix shared/db.py",
+            "cwd": str(ROOT),
+            "caller": "external-caller",
+        })
         result = mcp_server.handle_validate_routing_guard({
             "cwd": str(ROOT),
             "target_file": str(ROOT / "shared" / "db.py"),
             "tool_name": "Edit",
+            "caller": "external-caller",
         })
 
         assert result["valid"] is False

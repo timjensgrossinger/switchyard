@@ -62,6 +62,8 @@ def test_snapshot_includes_adaptive_thresholds():
 
         assert "adaptive_thresholds" in snapshot
         assert "rework_summary" in snapshot
+        assert "spend_summary" in snapshot
+        assert snapshot["spend_summary"]["window"] == "7d"
 
 
 def test_adaptive_summary_initialized():

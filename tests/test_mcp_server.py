@@ -1106,8 +1106,15 @@ def test_handle_route_task_execution_hint_host_native_for_claude(monkeypatch) ->
 
         hint = result["execution_hint"]
         assert hint["mode"] == "host_native"
+        assert hint.get("host_native_model") == "sonnet"
+        assert hint.get("host_native_method") == "host_task"
         assert "Task agent" in str(hint["recommended_action"])
         assert "github-copilot" in hint["delegation_targets"]
+        economics = hint.get("economics")
+        assert isinstance(economics, dict)
+        assert economics.get("why_not_delegate")
+        assert economics.get("cheapest_path_rationale")
+        assert result.get("host_model") == "sonnet"
         assert "execute_subtask" in result["quick_action"] or "Task agent" in result["quick_action"]
 
 
@@ -1142,6 +1149,9 @@ def test_handle_route_task_execution_hint_delegate_for_copilot(monkeypatch) -> N
         assert hint["mode"] == "delegate"
         assert "execute_subtask" in str(hint["recommended_action"])
         assert hint["delegation_targets"] == ["github-copilot", "codex"]
+        economics = hint.get("economics")
+        assert isinstance(economics, dict)
+        assert economics.get("cheapest_path_rationale")
 
 
 def test_execute_subtask_returns_billing_metadata(monkeypatch) -> None:
@@ -2769,7 +2779,7 @@ def test_memory_get_handler_rejects_corrupted_payload(monkeypatch) -> None:
 
 def test_memory_tools_are_registered() -> None:
     tool_names = {tool["name"] for tool in mcp_server.TOOLS}
-    assert {"memory_list", "memory_get", "memory_set", "memory_delete"} <= tool_names
+    assert {"memory_list", "memory_get", "memory_set", "memory_delete", "memory_search"} <= tool_names
     assert mcp_server.HANDLERS["memory_list"] is mcp_server.handle_memory_list
     assert mcp_server.HANDLERS["memory_get"] is mcp_server.handle_memory_get
     assert mcp_server.HANDLERS["memory_set"] is mcp_server.handle_memory_set

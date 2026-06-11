@@ -553,7 +553,7 @@ def _page_routing_policy_rich() -> dict:
     console.print(
         Panel(
             "[bold]Step 3.75/4 — Routing Enforcement[/bold]",
-            subtitle="Choose strict or advisory routing instructions per AI shell",
+            subtitle="Coordination guard and cost discipline per AI shell (guarded vs advisory)",
             style="blue",
         )
     )
@@ -561,10 +561,10 @@ def _page_routing_policy_rich() -> dict:
         "Routing enforcement preference:",
         choices=[
             questionary.Choice(
-                "Recommended defaults (Claude strict, Copilot/Gemini/Cursor/Codex advisory)",
+                "Recommended defaults (Claude guarded, Copilot/Gemini/Cursor/Codex advisory)",
                 value="default",
             ),
-            questionary.Choice("Strict for all AI shells", value="strict"),
+            questionary.Choice("Guarded for all AI shells", value="guarded"),
             questionary.Choice("Advisory for all AI shells", value="advisory"),
             questionary.Choice("Custom per shell", value="custom"),
         ],
@@ -581,7 +581,7 @@ def _page_routing_policy_rich() -> dict:
             f"{shell_id} routing mode:",
             choices=[
                 questionary.Choice("Recommended default", value="default"),
-                questionary.Choice("Strict", value="strict"),
+                questionary.Choice("Guarded", value="guarded"),
                 questionary.Choice("Advisory", value="advisory"),
             ],
         ).ask()
@@ -595,8 +595,8 @@ def _page_routing_policy_rich() -> dict:
 def _page_routing_policy_plain() -> dict:
     print("\n=== Step 3.75/4 — Routing Enforcement ===")
     choices = [
-        ("default", "Recommended defaults (Claude strict, Copilot/Gemini/Cursor/Codex advisory)"),
-        ("strict", "Strict for all AI shells"),
+        ("default", "Recommended defaults (Claude guarded, Copilot/Gemini/Cursor/Codex advisory)"),
+        ("guarded", "Guarded for all AI shells"),
         ("advisory", "Advisory for all AI shells"),
         ("custom", "Custom per shell"),
     ]
@@ -610,8 +610,11 @@ def _page_routing_policy_plain() -> dict:
 
     shells: dict[str, dict[str, str]] = {}
     for shell_id in SUPPORTED_ROUTING_POLICY_SHELLS:
-        raw_shell = input(f"  {shell_id} mode [default/strict/advisory, blank=default]: ").strip().lower()
-        shell_mode = raw_shell if raw_shell in {"default", "strict", "advisory"} else "default"
+        raw_shell = input(f"  {shell_id} mode [default/guarded/advisory, blank=default]: ").strip().lower()
+        if raw_shell == "strict":
+            print("  (note: 'strict' is deprecated; using 'guarded')")
+            raw_shell = "guarded"
+        shell_mode = raw_shell if raw_shell in {"default", "guarded", "advisory"} else "default"
         shells[shell_id] = {"mode": shell_mode}
     policy["shells"] = shells
     return policy

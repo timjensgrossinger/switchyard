@@ -153,9 +153,12 @@ def test_routing_policy_legacy_defaults_are_shell_specific() -> None:
         copilot = cfg.routing_policy.effective_profile("github-copilot-cli")
 
         assert claude.route_task_mandatory is True
-        assert claude.low_tier_execute_subtask is True
+        assert claude.low_tier_execute_subtask is False
         assert claude.agent_transparency_required is True
         assert claude.direct_edit_hooks is True
+        assert claude.tier_model_mapping["low"] == "haiku"
+        assert claude.tier_model_mapping["medium"] == "sonnet"
+        assert claude.tier_model_mapping["high"] == "opus"
         assert copilot.route_task_mandatory is False
         assert copilot.low_tier_execute_subtask is False
         assert copilot.agent_transparency_required is False
@@ -197,20 +200,34 @@ def test_routing_exception_yaml_merges_with_defaults() -> None:
         assert "docs/generated/*" in cfg.routing_exceptions.paths
 
 
-def test_routing_policy_global_strict_and_advisory_modes() -> None:
+def test_routing_policy_global_guarded_and_advisory_modes() -> None:
     with tempfile.TemporaryDirectory() as td:
         config_path = Path(td) / "config.yaml"
 
-        config_path.write_text("routing_policy:\n  mode: strict\n", encoding="utf-8")
-        strict_cfg = TGsConfig.from_yaml(config_path)
-        assert strict_cfg.routing_policy.effective_profile("github-copilot-cli").route_task_mandatory is True
-        assert strict_cfg.routing_policy.effective_profile("github-copilot-cli").direct_edit_hooks is False
-        assert strict_cfg.routing_policy.effective_profile("claude-code").direct_edit_hooks is True
+        config_path.write_text("routing_policy:\n  mode: guarded\n", encoding="utf-8")
+        guarded_cfg = TGsConfig.from_yaml(config_path)
+        assert guarded_cfg.routing_policy.mode == "guarded"
+        assert guarded_cfg.routing_policy.effective_profile("github-copilot-cli").route_task_mandatory is True
+        assert guarded_cfg.routing_policy.effective_profile("github-copilot-cli").low_tier_execute_subtask is False
+        assert guarded_cfg.routing_policy.effective_profile("github-copilot-cli").direct_edit_hooks is False
+        assert guarded_cfg.routing_policy.effective_profile("claude-code").direct_edit_hooks is True
 
         config_path.write_text("routing_policy:\n  mode: advisory\n", encoding="utf-8")
         advisory_cfg = TGsConfig.from_yaml(config_path)
         assert advisory_cfg.routing_policy.effective_profile("claude-code").route_task_mandatory is False
         assert advisory_cfg.routing_policy.effective_profile("claude-code").direct_edit_hooks is False
+
+
+def test_routing_policy_strict_alias_normalizes_to_guarded(caplog: pytest.LogCaptureFixture) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        config_path = Path(td) / "config.yaml"
+        config_path.write_text("routing_policy:\n  mode: strict\n", encoding="utf-8")
+        cfg = TGsConfig.from_yaml(config_path)
+
+        assert cfg.routing_policy.mode == "guarded"
+        assert cfg.routing_policy.effective_profile("claude-code").route_task_mandatory is True
+        assert cfg.routing_policy.effective_profile("claude-code").low_tier_execute_subtask is False
+        assert any("mode 'strict' is deprecated" in record.message for record in caplog.records)
 
 
 def test_routing_policy_custom_shell_overrides() -> None:

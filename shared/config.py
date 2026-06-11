@@ -86,6 +86,7 @@ PLANNER_ALLOW_TOPOLOGY_FALLBACK = False
 # ---------------------------------------------------------------------------
 PLAN_CACHE_TTL_HOURS = 168  # 7 days
 RESULT_CACHE_TTL_HOURS = 168
+CURRENT_PLAN_SCHEMA_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # Intent modifier keywords and weights
@@ -267,7 +268,7 @@ VALID_ENDPOINT_PROVIDER_SCOPES = frozenset({"local", "network"})
 VALID_ENDPOINT_PROVIDER_KINDS = frozenset({"ollama", "openai-compatible"})
 VALID_ENDPOINT_PROVIDER_SCHEMES = frozenset({"http", "https"})
 UNLIMITED_PARALLELISM = -1
-VALID_ROUTING_POLICY_MODES = frozenset({"default", "strict", "advisory", "custom"})
+VALID_ROUTING_POLICY_MODES = frozenset({"default", "guarded", "advisory", "custom"})
 SUPPORTED_ROUTING_POLICY_SHELLS = (
     "claude-code",
     "github-copilot-cli",
@@ -293,11 +294,35 @@ ROUTING_POLICY_SHELL_ALIASES = {
     "opencode": "opencode",
 }
 ROUTING_POLICY_HOOK_CAPABLE_SHELLS = frozenset({"claude-code"})
+ROUTING_POLICY_SHELL_BOOTSTRAP_IDS = {
+    "claude-code": "claude-code",
+    "github-copilot-cli": "github-copilot",
+    "gemini-cli": "gemini-cli",
+    "cursor": "cursor",
+    "codex": "codex",
+    "junie": "junie",
+    "opencode": "opencode",
+}
 DEFAULT_ROUTING_TIER_MODELS = {
     "low": "gpt-5-mini",
     "medium": "claude-sonnet-4.6",
     "high": "claude-opus-4.6",
 }
+
+
+def _shell_tier_model_defaults(shell_id: str) -> dict[str, str]:
+    """Return per-shell host-native tier models, falling back to generic defaults."""
+    from .model_registry import bootstrap_tier_map
+
+    bootstrap_id = ROUTING_POLICY_SHELL_BOOTSTRAP_IDS.get(shell_id)
+    if bootstrap_id is None:
+        return dict(DEFAULT_ROUTING_TIER_MODELS)
+    mapped = bootstrap_tier_map(bootstrap_id)
+    if not mapped:
+        return dict(DEFAULT_ROUTING_TIER_MODELS)
+    merged = dict(DEFAULT_ROUTING_TIER_MODELS)
+    merged.update(mapped)
+    return merged
 
 # Keyword overrides that bypass scoring entirely
 DEFAULT_OVERRIDES: dict[str, list[str]] = {
@@ -355,6 +380,8 @@ class ParallelismConfig:
     enabled: bool = True
     max_workers: int = UNLIMITED_PARALLELISM
     swarm_max_agents: int = 12
+    speculation_workers: int = 1
+    warm_path_workers: int = 2
 
 
 def normalize_parallelism_limit(
@@ -539,20 +566,22 @@ class RoutingPolicyConfig:
 
 
 def _mode_shell_profile(shell_id: str, mode: str) -> ShellRoutingProfile:
-    if mode == "strict":
+    tier_models = _shell_tier_model_defaults(shell_id)
+    if mode == "guarded":
         return ShellRoutingProfile(
             shell_id=shell_id,
             route_task_mandatory=True,
-            low_tier_execute_subtask=True,
+            low_tier_execute_subtask=False,
             agent_transparency_required=True,
             direct_edit_hooks=shell_id in ROUTING_POLICY_HOOK_CAPABLE_SHELLS,
+            tier_model_mapping=tier_models,
         )
-    return ShellRoutingProfile(shell_id=shell_id)
+    return ShellRoutingProfile(shell_id=shell_id, tier_model_mapping=tier_models)
 
 
 def _recommended_shell_profile(shell_id: str) -> ShellRoutingProfile:
     if shell_id == "claude-code":
-        return _mode_shell_profile(shell_id, "strict")
+        return _mode_shell_profile(shell_id, "guarded")
     return _mode_shell_profile(shell_id, "advisory")
 
 
@@ -851,6 +880,9 @@ def _normalize_routing_policy_mode(raw_mode: Any, *, field_name: str) -> str:
     if mode is None:
         return "default"
     mode = mode.lower()
+    if mode == "strict":
+        log.warning("%s: mode 'strict' is deprecated; use 'guarded'", field_name)
+        return "guarded"
     if mode not in VALID_ROUTING_POLICY_MODES:
         log.warning("%s: invalid mode %r; using default", field_name, raw_mode)
         return "default"
@@ -1200,6 +1232,10 @@ class TGsConfig:
     plan_cache_ttl_hours: int = PLAN_CACHE_TTL_HOURS
     result_cache_ttl_hours: int = RESULT_CACHE_TTL_HOURS
 
+    # Synthesis behaviour (orchestrator end-of-run merge)
+    synthesis_map_reduce: str = "auto"  # off | auto | always
+    synthesis_chunk_chars: int = 12000
+
     # Token ceilings
     token_ceiling_low: int = TOKEN_CEILING_LOW
     token_ceiling_medium: int = TOKEN_CEILING_MEDIUM
@@ -1317,7 +1353,7 @@ class TGsConfig:
     surgical_edit_max_file_bytes: int = SURGICAL_EDIT_MAX_FILE_BYTES
     surgical_edit_blocks_max_file_bytes: int = SURGICAL_EDIT_BLOCKS_MAX_FILE_BYTES
     surgical_edit_length_ratio_min: float = SURGICAL_EDIT_LENGTH_RATIO_MIN
-    execute_subtask_guard_strict: bool = True
+    execute_subtask_guard_strict: bool = False
     auto_cascade_mode: bool = True
 
     @property
@@ -1391,6 +1427,20 @@ class TGsConfig:
                     field_name="swarm.max_agents",
                     minimum=1,
                 ),
+                speculation_workers=_coerce_config_int(
+                    parallelism_raw.get("speculation_workers", 1),
+                    default=1,
+                    field_name="parallelism.speculation_workers",
+                    minimum=1,
+                    maximum=8,
+                ),
+                warm_path_workers=_coerce_config_int(
+                    parallelism_raw.get("warm_path_workers", 2),
+                    default=2,
+                    field_name="parallelism.warm_path_workers",
+                    minimum=1,
+                    maximum=8,
+                ),
             ),
             budgets=BudgetConfig(
                 default_hard_cap_tokens=budgets_raw.get("default_hard_cap_tokens", 1000),
@@ -1418,6 +1468,23 @@ class TGsConfig:
         cfg.output_quality_retry_enabled = raw.get("output_quality_retry_enabled", True) is True
         cfg.quality_check_incomplete_output = raw.get("quality_check_incomplete_output", False) is True
         cfg.reasoning_scoring_enabled = raw.get("reasoning_scoring_enabled", True) is True
+
+        synthesis_mode = orchestrator_raw.get("synthesis_map_reduce", "auto")
+        if isinstance(synthesis_mode, str) and synthesis_mode.strip().lower() in {
+            "off",
+            "auto",
+            "always",
+        }:
+            cfg.synthesis_map_reduce = synthesis_mode.strip().lower()
+        else:
+            cfg.synthesis_map_reduce = "auto"
+        cfg.synthesis_chunk_chars = _coerce_config_int(
+            orchestrator_raw.get("synthesis_chunk_chars", 12000),
+            default=12000,
+            field_name="orchestrator.synthesis_chunk_chars",
+            minimum=1024,
+            maximum=256_000,
+        )
 
         verify_gate_raw = raw.get("verify_gate", {})
         if isinstance(verify_gate_raw, Mapping):
@@ -2264,11 +2331,15 @@ class TGsConfig:
             "orchestrator": {
                 "planner_model": self.planner_model,
                 "planner_timeout_seconds": self.planner_timeout,
+                "synthesis_map_reduce": self.synthesis_map_reduce,
+                "synthesis_chunk_chars": self.synthesis_chunk_chars,
             },
             "parallelism": {
                 "enabled": self.parallelism.enabled,
                 "max_workers": self.parallelism.max_workers,
                 "swarm_max_agents": self.parallelism.swarm_max_agents,
+                "speculation_workers": self.parallelism.speculation_workers,
+                "warm_path_workers": self.parallelism.warm_path_workers,
             },
             "swarm": {
                 "max_agents": self.swarm_max_agents,

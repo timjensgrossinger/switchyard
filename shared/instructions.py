@@ -67,9 +67,11 @@ def render_shell_instructions(
     if profile.route_task_mandatory:
         lines.extend(
             [
-                "### Routing mode: strict",
+                "### Routing mode: guarded",
                 "",
-                "ALWAYS call `route_task` before writing or editing code or other non-exempt project files.",
+                "ALWAYS call `route_task` or `decompose_task` before writing or editing code or other non-exempt project files.",
+                "After routing, follow `execution_hint` — host-native execution first (Task tool, direct edits); "
+                "use `execute_subtask` only for cross-backend delegation when `execution_hint.mode` is `delegate`.",
                 "If `route_task` returns a routing guard, follow that guard before using direct edit/write tools.",
             ]
         )
@@ -80,6 +82,7 @@ def render_shell_instructions(
                 "",
                 "`route_task` is recommended for non-trivial non-exempt changes, but it is not mandatory before edits in this shell.",
                 "You may edit directly when that is simpler or when shell/tooling support does not enforce routing guards.",
+                "When you do route, follow `execution_hint` — host-native first; delegate only when needed.",
             ]
         )
 
@@ -97,10 +100,10 @@ def render_shell_instructions(
     )
 
     lines.append("")
-    if profile.low_tier_execute_subtask:
-        lines.append("For low-tier work, use `execute_subtask` only when delegating to another backend is safer or required.")
-    else:
-        lines.append("For low-tier work, prefer host-native edits or the Task tool; use `execute_subtask` only for cross-backend delegation.")
+    lines.append(
+        "For low-tier work, prefer host-native edits or the Task tool; "
+        "use `execute_subtask` only for cross-backend delegation."
+    )
 
     lines.append("")
     if profile.agent_transparency_required:
@@ -124,7 +127,7 @@ def render_shell_instructions(
                 "",
                 f"{label} should enforce direct `Edit`/`Write` calls with a `PreToolUse` hook.",
                 "The managed hook calls Threnody `validate_routing_guard` with `target_file`, `tool_name`, and `cwd`.",
-                "Do not bypass this hook for code edits unless the user explicitly disables strict routing.",
+                "Do not bypass this hook for code edits unless the user explicitly disables guarded routing.",
                 "",
             ]
         )

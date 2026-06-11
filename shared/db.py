@@ -21,9 +21,11 @@ import sqlite3
 import stat
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
+    CURRENT_PLAN_SCHEMA_VERSION,
     DB_PATH,
     PLAN_CACHE_TTL_HOURS,
     RESULT_CACHE_TTL_HOURS,
@@ -89,6 +91,15 @@ def _schema_lock_for_path(path: Path) -> threading.Lock:
             lock = threading.Lock()
             _SCHEMA_LOCKS[key] = lock
         return lock
+
+
+@dataclass(frozen=True)
+class PlanCacheLookup:
+    """Result of a plan cache lookup with invalidation reason."""
+
+    status: str  # hit | miss | expired | schema_invalid
+    plan: dict | None = None
+    plan_schema_version: int | None = None
 
 
 class Database:
@@ -855,6 +866,62 @@ class Database:
             ON memory (scope, project_id, task_id, key)
             """
         )
+        Database._ensure_memory_fts_table(conn)
+
+    @staticmethod
+    def _ensure_memory_fts_table(conn: sqlite3.Connection) -> None:
+        """Add FTS5 search index for memory values."""
+        fts_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'"
+        ).fetchone()
+        if fts_exists is not None:
+            return
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE memory_fts USING fts5(
+                scope UNINDEXED,
+                project_id UNINDEXED,
+                task_id UNINDEXED,
+                key UNINDEXED,
+                value_text,
+                tokenize='porter'
+            )
+            """
+        )
+
+    def rebuild_memory_fts(self) -> int:
+        """Rebuild the memory FTS index from authoritative memory rows."""
+        rebuilt = 0
+        with self.conn() as conn:
+            conn.execute("DELETE FROM memory_fts")
+            rows = conn.execute(
+                "SELECT scope, project_id, task_id, key, value_json, value_type FROM memory"
+            ).fetchall()
+            for scope, project_id, task_id, key, value_json, value_type in rows:
+                value_text = Database._memory_value_to_search_text(
+                    str(value_json or ""),
+                    str(value_type or ""),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_fts(scope, project_id, task_id, key, value_text)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (scope, project_id, task_id, key, value_text),
+                )
+                rebuilt += 1
+        return rebuilt
+
+    @staticmethod
+    def _memory_value_to_search_text(value_json: str, value_type: str) -> str:
+        if value_type == "string":
+            try:
+                decoded = json.loads(value_json)
+            except json.JSONDecodeError:
+                return value_json
+            if isinstance(decoded, str):
+                return decoded
+        return value_json
 
     @staticmethod
     def _ensure_phase31_swarm_columns(conn: sqlite3.Connection) -> None:
@@ -1980,6 +2047,13 @@ class Database:
 
     def plan_get(self, task: str) -> dict | None:
         """Return cached plan if found and not expired."""
+        lookup = self.plan_lookup(task)
+        if lookup.status == "hit":
+            return lookup.plan
+        return None
+
+    def plan_lookup(self, task: str) -> PlanCacheLookup:
+        """Return cached plan with TTL and schema-version validation."""
         key = self._plan_key(task)
         with self.conn() as conn:
             row = conn.execute(
@@ -1987,33 +2061,40 @@ class Database:
                 (key,),
             ).fetchone()
             if row is None:
-                return None
-            plan_json, topology, _plan_schema_version, ts = row
+                return PlanCacheLookup(status="miss")
+            plan_json, topology, plan_schema_version, ts = row
             if time.time() - ts > self._plan_ttl:
                 conn.execute("DELETE FROM plan_cache WHERE key = ?", (key,))
-                return None
+                return PlanCacheLookup(status="expired")
+            schema_ver = int(plan_schema_version or 0)
+            if schema_ver < CURRENT_PLAN_SCHEMA_VERSION:
+                conn.execute("DELETE FROM plan_cache WHERE key = ?", (key,))
+                return PlanCacheLookup(
+                    status="schema_invalid",
+                    plan_schema_version=schema_ver,
+                )
         try:
             plan = json.loads(plan_json)
         except json.JSONDecodeError:
-            return None
+            return PlanCacheLookup(status="miss")
         if isinstance(plan, dict) and topology is not None and "topology" not in plan:
             plan["topology"] = topology
-        return plan
+        return PlanCacheLookup(
+            status="hit",
+            plan=plan,
+            plan_schema_version=schema_ver,
+        )
 
     def plan_put(self, task: str, plan: dict, model: str) -> None:
         """Cache a plan decomposition."""
         key = self._plan_key(task)
         topology = None
-        plan_schema_version = 1
         if isinstance(plan, dict):
             raw_topology = plan.get("topology")
             if isinstance(raw_topology, str) and raw_topology.strip():
                 topology = raw_topology.strip()
-            raw_schema_version = plan.get("plan_schema_version", 1)
-            try:
-                plan_schema_version = int(raw_schema_version)
-            except (TypeError, ValueError):
-                plan_schema_version = 1
+            plan = dict(plan)
+            plan["plan_schema_version"] = CURRENT_PLAN_SCHEMA_VERSION
         try:
             plan_json = json.dumps(plan)
         except TypeError as exc:
@@ -2029,7 +2110,7 @@ class Database:
                     plan_json,
                     model,
                     topology,
-                    plan_schema_version,
+                    CURRENT_PLAN_SCHEMA_VERSION,
                     time.time(),
                 ),
             )

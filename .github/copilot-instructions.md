@@ -172,7 +172,7 @@ The planner is advisory — it only returns decomposition metadata. The orchestr
 - **LLM output parsing**: reuse `_extract_json(raw)` from `shared/planner.py` — fenced JSON first, then brace-balancing fallback.
 - **Pattern utilities**: reuse `pattern_hash` / `normalize_pattern` from `shared/agents.py`.
 - **Config template vs installed**: `config.yaml` in the repo root is the template only. Runtime reads `~/.local/lib/threnody/config.yaml`. `install.sh` creates the installed copy only when absent — editing the template does not overwrite an existing install.
-- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction strictness: `strict` (default for Claude Code) enforces mandatory `route_task` calls; `advisory` (default for GitHub Copilot CLI) renders guidance only.
+- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction enforcement: `guarded` (default for Claude Code) requires `route_task` before code edits; `advisory` (default for GitHub Copilot CLI) renders guidance only. `strict` is a deprecated alias for `guarded`.
 - **`execute_subtask` + `target_file` writes model output verbatim**: when the model returns only a fragment, only that fragment lands in the file — the rest is lost. Safe for new files or full rewrites; dangerous for surgical edits to large existing files. Use direct file tools for targeted edits.
 - **Routing exceptions bypass the routing guard**: use `routing_exception_add/list/remove` MCP tools (or the DB helpers) to exempt specific calls from the guard. Valid `exception_type` values: `skill`, `filetype`, `project`, `command`, `caller`, `path`.
 
@@ -199,14 +199,14 @@ Routing eval fixtures live in `tests/eval/` organised by tier (`low_tier/`, `med
 
 `routing_exceptions` is an exemption list, not a code-file allowlist. Add only extra non-code surfaces; do not enumerate code languages or config formats. Built-in exemptions cover `.md`, `.mdc`, and known AI assistant instruction files; every other filetype remains routed by default unless explicitly exempted.
 
-`routing_policy` controls how strict routing instructions are per shell. Default: `strict` for Claude Code, `advisory` for all others. To override:
+`routing_policy` controls guarded vs advisory routing instructions per shell. Default: `guarded` for Claude Code, `advisory` for all others. To override:
 
 ```yaml
 routing_policy:
   mode: custom
   shells:
     claude-code:
-      mode: strict
+      mode: guarded
     github-copilot-cli:
       mode: advisory
 ```

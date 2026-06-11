@@ -30,6 +30,13 @@ from .discovery import (
 )
 from .db import Database
 from .agents import AgentRegistry, build_learned_agent_runtime_context
+from .plan_cache import (
+    PLAN_CACHE_EXPIRED,
+    PLAN_CACHE_HIT,
+    PLAN_CACHE_MISS,
+    PLAN_CACHE_SCHEMA_INVALID,
+    estimated_planner_tokens_from_plan,
+)
 from .style import StyleLearner, DecompositionPrefs
 
 log = logging.getLogger(__name__)
@@ -1084,12 +1091,38 @@ class Planner:
 
         # 1. Check plan cache
         if not skip_cache and self._db:
-            cached = self._db.plan_get(cache_key)
-            if cached and "subtasks" in cached:
+            lookup = self._db.plan_lookup(cache_key)
+            if lookup.status == "hit" and lookup.plan and "subtasks" in lookup.plan:
                 log.info("Plan cache hit — reusing cached decomposition")
-                plan = self._build_plan(cached, task)
+                plan = self._build_plan(lookup.plan, task)
                 plan.cache_hit = True
+                tokens_saved = estimated_planner_tokens_from_plan(lookup.plan)
+                self._log_planner_telemetry(
+                    task,
+                    planner_tokens=TokenEstimate(0, 0),
+                    estimated_tokens=tokens_saved,
+                    actual_tokens=0,
+                    timing_ms=0,
+                    success=True,
+                    reason=PLAN_CACHE_HIT,
+                )
                 return plan
+            cache_reasons = {
+                "miss": PLAN_CACHE_MISS,
+                "expired": PLAN_CACHE_EXPIRED,
+                "schema_invalid": PLAN_CACHE_SCHEMA_INVALID,
+            }
+            cache_reason = cache_reasons.get(lookup.status)
+            if cache_reason is not None:
+                self._log_planner_telemetry(
+                    task,
+                    planner_tokens=TokenEstimate(0, 0),
+                    estimated_tokens=0,
+                    actual_tokens=0,
+                    timing_ms=0,
+                    success=True,
+                    reason=cache_reason,
+                )
 
         # 2. Call LLM backend
         started_at = time.monotonic()

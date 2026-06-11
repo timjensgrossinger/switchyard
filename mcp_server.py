@@ -82,10 +82,12 @@ from shared.memory import (
     memory_get,
     memory_list,
     memory_refresh_swarm_state_from_db,
+    memory_search,
     memory_set,
 )
 from shared import outcomes as shared_outcomes
 from shared.status import build_status_snapshot
+from shared.spend import build_spend_snapshot, build_usage_state
 from shared.swarm import (
     build_wave_progress_payload,
     get_coordinator_round_checkpoint_by_index,
@@ -111,7 +113,7 @@ from shared.discovery import (
     detect_caller,
     get_registry,
 )
-from shared.config import normalize_caller_id
+from shared.config import normalize_caller_id, normalize_routing_policy_shell_id
 from shared.quota import ProviderQuotaService
 from shared.adapters import ProviderCapability
 from shared.snapshot import FileDiff, FileSnapshot, apply_unified_diff
@@ -1373,6 +1375,22 @@ TOOLS = [
         },
     },
     {
+        "name": "inspect_spend",
+        "description": (
+            "Return aggregated spend and savings telemetry from delegated subtasks "
+            "(est_cost_usd vs counterfactual) for a time window."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": "Time window (7d, 30d, 24h, all). Default: 7d",
+                },
+            },
+        },
+    },
+    {
         "name": "inspect_status",
         "description": (
             "Return a compact readiness/status snapshot for one project, "
@@ -1550,6 +1568,20 @@ TOOLS = [
                 "task_id": {"type": "string"},
             },
             "required": ["scope", "key"],
+        },
+    },
+    {
+        "name": "memory_search",
+        "description": "Search memory values via local FTS5 (no embeddings).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "scope": {"type": "string"},
+                "project_id": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
         },
     },
     {
@@ -1784,11 +1816,23 @@ def handle_plan_task(args: dict) -> dict:
     result = _attach_models_to_subtasks(planner.plan_to_dict(plan))
 
     _sfi_subtasks = [st for st in result.get("subtasks", []) if isinstance(st, dict) and st.get("single_file_insertion")]
-    _sfi_hint = (
-        f"\n\nSubtasks with single_file_insertion=true ({len(_sfi_subtasks)} found): "
-        "use execute_subtask(tier='low', effort='high') instead of spawning a Task agent — "
-        "free providers can handle single-file insertions with effort boost."
-    ) if _sfi_subtasks else ""
+    _host_caller = normalize_caller_id(caller) in HOST_PROVIDER_NAMES
+    if _sfi_subtasks:
+        if _host_caller:
+            _low_model = _host_native_model_for_tier(config, caller, "low") or "low-tier host default"
+            _sfi_hint = (
+                f"\n\nSubtasks with single_file_insertion=true ({len(_sfi_subtasks)} found): "
+                f"use the host Task tool with model='{_low_model}' (or direct edits) instead of execute_subtask — "
+                "host-native execution avoids subprocess billing."
+            )
+        else:
+            _sfi_hint = (
+                f"\n\nSubtasks with single_file_insertion=true ({len(_sfi_subtasks)} found): "
+                "use execute_subtask(tier='low', effort='high') instead of spawning a Task agent — "
+                "free providers can handle single-file insertions with effort boost."
+            )
+    else:
+        _sfi_hint = ""
     result["tip"] = (
         f"Spawn {plan.total_agents} agent(s) across {len(plan.waves)} wave(s). "
         "Each subtask has its own tier and model. "
@@ -2423,10 +2467,48 @@ def _extract_route_file_hints(task: str, cwd: str) -> list[str]:
     return hints
 
 
-def _route_guard_mode_for_task(task: str, tier: str) -> str | None:
+def _routing_profile_for_caller(config: TGsConfig, caller: str | None) -> Any:
+    shell_id = normalize_routing_policy_shell_id(normalize_caller_id(caller))
+    if shell_id is None:
+        return None
+    return config.routing_policy.effective_profile(shell_id)
+
+
+def _host_native_model_for_tier(
+    config: TGsConfig,
+    caller: str | None,
+    tier: str,
+) -> str | None:
+    profile = _routing_profile_for_caller(config, caller)
+    if profile is None:
+        return None
+    model = profile.tier_model_mapping.get(tier)
+    return model if isinstance(model, str) and model.strip() else None
+
+
+def _host_native_method_for_tier(tier: str) -> str:
+    return "direct_edit" if tier == "low" else "host_task"
+
+
+def _route_guard_mode_for_route(
+    *,
+    task: str,
+    tier: str,
+    caller: str | None,
+    execution_hint: dict[str, object],
+    config: TGsConfig,
+) -> str | None:
     if not _task_likely_writes_files(task):
         return None
-    if tier == "low":
+
+    hint_mode = execution_hint.get("mode")
+    profile = _routing_profile_for_caller(config, caller)
+    low_tier_delegate = bool(profile and profile.low_tier_execute_subtask)
+    if (
+        tier == "low"
+        and hint_mode == "delegate"
+        and (low_tier_delegate or normalize_caller_id(caller) not in HOST_PROVIDER_NAMES)
+    ):
         return ROUTING_GUARD_MODE_EXECUTE_SUBTASK
     return ROUTING_GUARD_MODE_DIRECT
 
@@ -2768,7 +2850,9 @@ def _validate_routing_guard(
             guard=guard,
         )
     if mode == ROUTING_GUARD_MODE_EXECUTE_SUBTASK:
-        if config.execute_subtask_guard_strict:
+        profile = _routing_profile_for_caller(config, normalized_caller)
+        low_tier_delegate = bool(profile and profile.low_tier_execute_subtask)
+        if config.execute_subtask_guard_strict or low_tier_delegate:
             return _deny_routing_guard(
                 f"Latest routing decision is low-tier write work. Use execute_subtask(target_file=...) instead of {normalized_tool}.",
                 guard=guard,
@@ -2856,6 +2940,7 @@ def _validate_routing_guard(
 
     return {
         "valid": True,
+        "mode": mode,
         "routing_guard": dict(guard),
     }
 
@@ -2881,12 +2966,118 @@ def _delegation_targets_for_tier(
     return [str(getattr(provider, "name", "")) for provider in ordered if getattr(provider, "name", "")]
 
 
+def _estimate_route_cost_usd(model: str | None, tier: str) -> float | None:
+    if not model:
+        return None
+    try:
+        from shared.model_catalog import _load_price_data
+
+        prices = _load_price_data()
+        price_info = prices.get(model.lower(), {})
+        input_rate = float(price_info.get("input_cost_per_token") or 0.0)
+        output_rate = float(price_info.get("output_cost_per_token") or 0.0)
+        token_budget = {"low": 2000, "medium": 8000, "high": 20000}.get(tier, 5000)
+        input_tokens = int(token_budget * 0.75)
+        output_tokens = token_budget - input_tokens
+        estimate = input_tokens * input_rate + output_tokens * output_rate
+        return round(estimate, 6) if estimate > 0 else 0.0
+    except Exception:
+        log.debug("_estimate_route_cost_usd failed", exc_info=True)
+        return None
+
+
+def _build_execution_hint_economics(
+    *,
+    tier: str,
+    caller: str | None,
+    mode: str,
+    selection: dict[str, object] | None,
+    delegation_targets: list[str],
+) -> dict[str, object]:
+    is_free = bool(selection.get("is_free")) if isinstance(selection, dict) else False
+    cost_rank = selection.get("cost_rank") if isinstance(selection, dict) else None
+    billing_tier = (
+        str(selection.get("billing_tier"))
+        if isinstance(selection, dict) and selection.get("billing_tier") is not None
+        else "unknown"
+    )
+    provider_cost_hint = (
+        str(selection.get("provider_cost_hint"))
+        if isinstance(selection, dict) and selection.get("provider_cost_hint") is not None
+        else ""
+    )
+    provider = (
+        str(selection.get("provider_id") or selection.get("provider") or "")
+        if isinstance(selection, dict)
+        else ""
+    )
+    model = str(selection.get("model") or "") if isinstance(selection, dict) else ""
+    estimated_cost_usd = _estimate_route_cost_usd(model or None, tier)
+
+    if mode == "host_native":
+        if tier == "low":
+            rationale = (
+                "Low-tier boilerplate: host edits or Task tool avoid subprocess billing."
+            )
+        else:
+            rationale = (
+                f"Host-native Task execution uses your {normalize_caller_id(caller) or 'host'} entitlement."
+            )
+        if is_free and delegation_targets:
+            rationale += (
+                f" If delegating, cheapest routable backend is {delegation_targets[0]}"
+                f" (cost_rank={cost_rank}, free={is_free})."
+            )
+        why_not_delegate = (
+            "Caller is an MCP host shell — host-native execution avoids Threnody subprocess billing."
+        )
+    elif delegation_targets:
+        target = delegation_targets[0]
+        if is_free:
+            rationale = (
+                f"Cheapest routable backend is {target} via execute_subtask"
+                f" (model={model or 'tier default'}, cost_rank={cost_rank}, free tier)."
+            )
+        else:
+            cost_note = (
+                f"~${estimated_cost_usd:.6f} estimated"
+                if isinstance(estimated_cost_usd, (int, float))
+                else "subscription/metered billing"
+            )
+            rationale = (
+                f"Cheapest routable backend is {target} ({model or 'tier default'}); "
+                f"{cost_note} for typical {tier}-tier work."
+            )
+        why_not_delegate = None
+    else:
+        rationale = "No routable delegation targets; use host-native execution."
+        why_not_delegate = "No authenticated routable backends for this tier."
+
+    economics: dict[str, object] = {
+        "is_free": is_free,
+        "cost_rank": cost_rank,
+        "billing_tier": billing_tier,
+        "provider_cost_hint": provider_cost_hint,
+        "cheapest_path_rationale": rationale,
+        "why_not_delegate": why_not_delegate,
+    }
+    if provider:
+        economics["selected_provider"] = provider
+    if model:
+        economics["selected_model"] = model
+    if estimated_cost_usd is not None:
+        economics["estimated_cost_usd"] = estimated_cost_usd
+    return economics
+
+
 def _build_route_execution_hint(
     *,
     tier: str,
     caller: str | None,
     registry: Any,
     caller_allowlists: dict[str, list[str]] | None,
+    selection: dict[str, object] | None = None,
+    config: TGsConfig | None = None,
 ) -> dict[str, object]:
     normalized_caller = normalize_caller_id(caller)
     delegation_targets = _delegation_targets_for_tier(
@@ -2896,35 +3087,81 @@ def _build_route_execution_hint(
         caller_allowlists=caller_allowlists,
     )
     host_native = bool(normalized_caller and normalized_caller in HOST_PROVIDER_NAMES)
+    host_native_model = (
+        _host_native_model_for_tier(config, caller, tier) if config is not None else None
+    )
+    host_native_method = _host_native_method_for_tier(tier)
 
     if host_native:
-        tier_actions = {
-            "low": "Use direct edits or the host Task tool for trivial changes",
-            "medium": "Spawn a host Task agent (e.g. sonnet-class model)",
-            "high": "Spawn a host Task agent (e.g. opus-class model) or execute_swarm for multi-agent work",
-        }
-        recommended = tier_actions.get(tier, "Use host-native execution (Task tool or direct edits)")
+        if tier == "low":
+            recommended = (
+                f"Use direct edits or host Task tool (model='{host_native_model}')"
+                if host_native_model
+                else "Use direct edits or the host Task tool for trivial changes"
+            )
+        else:
+            recommended = (
+                f"Spawn host Task agent with model='{host_native_model}'"
+                if host_native_model
+                else {
+                    "medium": "Spawn a host Task agent (e.g. sonnet-class model)",
+                    "high": "Spawn a host Task agent (e.g. opus-class model) or execute_swarm for multi-agent work",
+                }.get(tier, "Use host-native execution (Task tool or direct edits)")
+            )
         if delegation_targets:
             preview = ", ".join(delegation_targets[:4])
             recommended = f"{recommended}; optional delegation via execute_subtask → {preview}"
-        return {
+        economics = _build_execution_hint_economics(
+            tier=tier,
+            caller=caller,
+            mode="host_native",
+            selection=selection,
+            delegation_targets=delegation_targets,
+        )
+        payload: dict[str, object] = {
             "mode": "host_native",
             "recommended_action": recommended,
             "delegation_targets": delegation_targets,
+            "economics": economics,
+            "host_native_method": host_native_method,
         }
+        if host_native_model:
+            payload["host_native_model"] = host_native_model
+        return payload
 
     if delegation_targets:
+        economics = _build_execution_hint_economics(
+            tier=tier,
+            caller=caller,
+            mode="delegate",
+            selection=selection,
+            delegation_targets=delegation_targets,
+        )
         return {
             "mode": "delegate",
             "recommended_action": f"→ execute_subtask(prompt=..., tier='{tier}', target_file='...')",
             "delegation_targets": delegation_targets,
+            "economics": economics,
+            "host_native_method": host_native_method,
         }
 
-    return {
+    economics = _build_execution_hint_economics(
+        tier=tier,
+        caller=caller,
+        mode="host_native",
+        selection=selection,
+        delegation_targets=[],
+    )
+    payload = {
         "mode": "host_native",
         "recommended_action": "Use host-native execution (Task tool or direct edits)",
         "delegation_targets": [],
+        "economics": economics,
+        "host_native_method": host_native_method,
     }
+    if host_native_model:
+        payload["host_native_model"] = host_native_model
+    return payload
 
 
 def _route_quick_action(
@@ -2993,10 +3230,14 @@ def handle_route_task(args: dict) -> dict:
         caller=caller,
         registry=registry,
         caller_allowlists=caller_allowlists,
+        selection=selection if isinstance(selection, dict) else None,
+        config=config,
     )
+    host_model = execution_hint.get("host_native_model")
+    delegate_model = model if execution_hint.get("mode") == "delegate" else None
     result = {
         "tier": decision.tier,
-        "model": model,
+        "model": delegate_model if delegate_model is not None else (host_model or model),
         "score": decision.score,
         "reason": decision.reason,
         "agents": decision.agents,
@@ -3004,6 +3245,10 @@ def handle_route_task(args: dict) -> dict:
         "override": decision.override,
         "execution_hint": execution_hint,
     }
+    if host_model and execution_hint.get("mode") == "host_native":
+        result["host_model"] = host_model
+    if delegate_model is not None:
+        result["delegate_model"] = delegate_model
     result["quick_action"] = _route_quick_action(
         tier=decision.tier,
         caller=caller,
@@ -3027,7 +3272,13 @@ def handle_route_task(args: dict) -> dict:
         cwd=args.get("cwd"),
         task=task,
         source_tool="route_task",
-        mode=_route_guard_mode_for_task(task, decision.tier),
+        mode=_route_guard_mode_for_route(
+            task=task,
+            tier=decision.tier,
+            caller=caller,
+            execution_hint=execution_hint,
+            config=config,
+        ),
         tier=decision.tier,
         provider=result.get("provider") if isinstance(result.get("provider"), str) else None,
         model=result.get("model") if isinstance(result.get("model"), str) else None,
@@ -6414,6 +6665,32 @@ def handle_memory_delete(args: dict) -> dict:
         return _memory_error_response(exc)
 
 
+def handle_memory_search(args: dict) -> dict:
+    try:
+        _config, db, *_ = _ensure_init()
+    except Exception:
+        return {"error": "database unavailable — route_task still works", "code": "DB_UNAVAILABLE"}
+    try:
+        query = _required_memory_string_arg(args, "query")
+        scope = _optional_memory_string_arg(args, "scope")
+        project_id = _optional_memory_string_arg(args, "project_id")
+        limit_raw = args.get("limit", 10)
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            limit = 10
+        hits = memory_search(
+            query,
+            scope=scope,
+            project_id=project_id,
+            limit=limit,
+            db=db,
+        )
+        return {"query": query, "count": len(hits), "hits": hits}
+    except MemoryRequestError as exc:
+        return _memory_error_response(exc)
+
+
 def _resolve_record_outcome_operator_id(raw_operator_id: object) -> tuple[str, dict | None]:
     if raw_operator_id is None:
         return shared_outcomes.ANONYMOUS_OPERATOR_ID, None
@@ -6476,17 +6753,19 @@ def handle_record_outcome(args: dict) -> dict:
 
 
 def tune_show(project_id: str, key: str | None = None) -> dict:
-    _config, db, *_ = _ensure_init()
+    config, db, *_ = _ensure_init()
     try:
         normalized_project_id = _require_project_id(project_id)
     except ValueError as exc:
         return {"error": "InvalidProjectPath", "details": str(exc)}
 
     settings = db.get_project_settings(normalized_project_id)
+    usage_state = build_usage_state(db, config)
     if key is None:
         return {
             "project_id": normalized_project_id,
             "settings": settings,
+            "usage_state": usage_state,
         }
 
     try:
@@ -6572,6 +6851,16 @@ def tune_reset(project_id: str, key: str | None = None) -> dict:
         "key": canonical_key,
         "settings": settings,
     }
+
+
+def inspect_spend(since: str = "7d") -> dict:
+    config, db, *_ = _ensure_init()
+    window = str(since or "7d")
+    return build_spend_snapshot(db, since=window, config=config)
+
+
+def handle_inspect_spend(args: dict) -> dict:
+    return inspect_spend(str(args.get("since") or "7d"))
 
 
 def inspect_status(project_id: str = "") -> dict:
@@ -8753,7 +9042,7 @@ def handle_learning_agent_summary(_args: dict) -> dict:
         
         # Query rejected agents by lane
         rejected = []
-        for lane in ['project', 'shared']:
+        for lane in ['project', 'shared', 'cost_lane']:
             try:
                 lane_agents = db.agent_definitions_list(lane=lane) or []
                 rejected.extend([a for a in lane_agents if a.get('status') == 'rejected'])
@@ -8772,6 +9061,7 @@ def handle_learning_agent_summary(_args: dict) -> dict:
                 'id': agent.get('id', agent.get('agent_id', 'unknown')),
                 'description': description,
                 'lane': agent.get('lane', 'unknown'),
+                'cost_lane': bool(agent.get('cost_lane')) or agent.get('lane') == 'cost_lane',
                 'pattern_hash': agent.get('pattern_hash', 'unknown'),
                 'status': agent.get('status', 'unknown'),
                 'created_at': agent.get('created_at', 0)
@@ -9006,6 +9296,7 @@ HANDLERS = {
     "inspect_task": handle_inspect_task,
     "resume_swarm_inspect": handle_resume_swarm_inspect,
     "resume_swarm_confirm": handle_resume_swarm_confirm,
+    "inspect_spend": handle_inspect_spend,
     "inspect_status": handle_inspect_status,
     "agent_queue_list": handle_approval_queue_list,
     "approval_queue_list": handle_approval_queue_list,
@@ -9019,6 +9310,7 @@ HANDLERS = {
     "memory_get": handle_memory_get,
     "memory_set": handle_memory_set,
     "memory_delete": handle_memory_delete,
+    "memory_search": handle_memory_search,
     "record_outcome": handle_record_outcome,
     "tune_show": handle_tune_show,
     "inspect_write_audit": handle_inspect_write_audit,

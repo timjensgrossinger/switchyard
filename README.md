@@ -67,6 +67,7 @@ Search terms that describe the same project: **MCP orchestrator**, **meta-harnes
 | **Learn over time** | Pattern tracking, draft agents, and an approval queue before anything goes live. |
 | **Swarm when needed** | Decompose hard work into dependency-ordered waves with linear, DAG, hierarchical, or star topologies. |
 | **Delegate optionally** | `execute_subtask` routes to other backends when you want cross-CLI execution. |
+| **Spend discipline** | Tier routing, free low-tier paths, and local spend telemetry (`inspect_spend`, `threnody gain`). |
 
 ---
 
@@ -97,7 +98,7 @@ execute subtask → track patterns → draft agent → YOU approve → activate 
 
 - **No auto-promotion** — drafts never become active without explicit approval
 - **Conservative gates** — recurrence, quality score, and low rework must all agree before drafting
-- **Project vs shared lanes** — project-specific patterns activate sooner; shared patterns need stronger evidence
+- **Project vs shared vs cost lanes** — project-specific patterns activate sooner; shared patterns need stronger evidence; **cost_lane** drafts prefer free/low-tier execution when recurrence and quality gates pass
 - **Inspect everything** — `learning_agent_summary`, `learning_pattern_health`, and redacted `learning_audit_log` MCP tools
 
 ```bash
@@ -143,6 +144,20 @@ Full list: [docs/RELEASE_LIMITATIONS.md](docs/RELEASE_LIMITATIONS.md)
 
 ---
 
+## Spend less across your CLIs
+
+Threnody is built for operators who want **token discipline** across Copilot, Claude, Gemini, Codex, Cursor, and other installed CLIs — not a second API bill from the coordination layer.
+
+1. **`route_task`** classifies work and returns `execution_hint` with host-native vs delegate guidance plus `economics` (`is_free`, `cost_rank`, `cheapest_path_rationale`).
+2. **Host-native first** — Task tool and direct edits use your existing CLI entitlements.
+3. **Delegate only when needed** — `execute_subtask` picks the cheapest routable backend.
+4. **Measure locally** — `inspect_spend`, `threnody inspect spend`, and `threnody gain` aggregate delegated-subtask savings from `cost_telemetry`.
+5. **Guarded coordination (Claude Code default)** — `route_task` before code edits; PreToolUse hook blocks unclassified premium edits. See [docs/HOOKS.md](docs/HOOKS.md). Set `routing_policy.mode: advisory` to disable.
+
+Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
+
+---
+
 ## Feature highlights
 
 | | Feature | What it does |
@@ -155,6 +170,7 @@ Full list: [docs/RELEASE_LIMITATIONS.md](docs/RELEASE_LIMITATIONS.md)
 | 🔀 | **Optional delegation** | `execute_subtask` to Copilot, Codex, Cursor, endpoints, Aider, … |
 | 📈 | **Adaptive thresholds** | EMA-based threshold learning from routing outcomes |
 | 🛡️ | **Write safety** | Path validation, outside-workspace preview gate, audit trail |
+| 🔒 | **Guarded routing** | Optional coordination gate + Claude PreToolUse hooks (`routing_policy.mode: guarded`) |
 
 ---
 
@@ -230,8 +246,11 @@ Full reference: [docs/CLI.md](docs/CLI.md)
 | [Configuration](config.example.yaml) | Safe starting config (copy to `~/.local/lib/threnody/config.yaml`) |
 | [Model Discovery](docs/MODEL_DISCOVERY.md) | Live catalogs, tier pins, cost ranks |
 | [Routing Quality](docs/ROUTING_QUALITY.md) | Eval methodology and accuracy |
+| [Routing accuracy report](docs/ROUTING_ACCURACY.md) | Generated fixture stats (`python3 -m shared.routing_report --write-docs`) |
+| [Host routing hooks](docs/HOOKS.md) | Claude PreToolUse guard script |
 | [Release Limitations](docs/RELEASE_LIMITATIONS.md) | Beta scope, privacy, roadmap |
 | [Legal and Provider Terms](docs/LEGAL.md) | Operator responsibilities and provider links |
+| [Cost savings workflows](docs/COST_SAVINGS.md) | Host-native vs delegate decision tree and operator commands |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common fixes |
 
 ---

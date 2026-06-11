@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 from shared.agents import DEFAULT_PENDING_APPROVAL_LIMIT, approval_queue_list
 from shared.config import normalize_parallelism_limit
 from shared.db import DEFAULT_PROJECT_FANOUT_CAP, Database
+from shared.plan_cache import build_plan_cache_summary
+from shared.spend import build_spend_snapshot, build_usage_state
 
 if TYPE_CHECKING:
     from shared.config import TGsConfig
@@ -73,6 +75,10 @@ def build_status_snapshot(
         "pending_approval_limit": pending_approval_limit,
     }
 
+    spend_snapshot = _load_spend_summary(db, config)
+    usage_state = build_usage_state(db, config)
+    plan_cache_summary = build_plan_cache_summary(db)
+
     return {
         "project_id": project_id,
         "readiness": {
@@ -92,6 +98,9 @@ def build_status_snapshot(
         "adaptive_thresholds": _load_adaptive_summary(db),
         "rework_summary": _load_rework_summary(db),
         "provider_health": _load_provider_health(db),
+        "spend_summary": spend_snapshot,
+        "usage_state": usage_state,
+        "plan_cache_summary": plan_cache_summary,
         "db_health": {
             "last_backup": (
                 datetime.datetime.fromtimestamp(getattr(db, 'last_backup_ts', None)).isoformat()
@@ -101,6 +110,7 @@ def build_status_snapshot(
             "last_integrity_ok": getattr(db, 'last_integrity_ok', None),
         },
         "explainability_link": "threnody inspect status --details",
+        "spend_link": "threnody inspect spend --since 7d",
     }
 
 
@@ -201,6 +211,31 @@ def _load_provider_health(db: Database) -> dict:
     except Exception:
         log.debug("provider health load failed", exc_info=True)
         return {"providers": [], "quarantined_count": 0, "degraded_count": 0, "any_unhealthy": False}
+
+
+def _load_spend_summary(db: Database, config: "TGsConfig") -> dict:
+    """Return compact spend totals for status surfaces."""
+    try:
+        snapshot = build_spend_snapshot(db, since="7d", config=config)
+        totals = snapshot.get("totals") if isinstance(snapshot.get("totals"), dict) else {}
+        return {
+            "window": snapshot.get("window", "7d"),
+            "subtask_count": int(totals.get("subtask_count") or 0),
+            "est_cost_usd": totals.get("est_cost_usd", 0.0),
+            "savings_usd": totals.get("savings_usd", 0.0),
+            "free_subtask_pct": totals.get("free_subtask_pct", 0.0),
+            "disclaimer": snapshot.get("disclaimer"),
+            "cli_hint": snapshot.get("cli_hint"),
+        }
+    except Exception:
+        log.debug("spend summary load failed", exc_info=True)
+        return {
+            "window": "7d",
+            "subtask_count": 0,
+            "est_cost_usd": 0.0,
+            "savings_usd": 0.0,
+            "free_subtask_pct": 0.0,
+        }
 
 
 def _load_rework_summary(db: Database) -> dict:

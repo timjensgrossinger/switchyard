@@ -418,9 +418,17 @@ def _build_claude_agent_markdown(project_id: str, candidate: Mapping[str, object
         f"description: {_yaml_scalar(description)}",
         f"tools: {_yaml_scalar(_render_tools_frontmatter(tools))}",
         f"model: {_yaml_scalar(model)}",
-        "---",
-        "",
     ])
+    lane = str(metadata.get("lane") or "")
+    if lane == "cost_lane":
+        frontmatter_lines = frontmatter.splitlines()
+        frontmatter_lines.extend([
+            f"preferred_tier: {_yaml_scalar('low')}",
+            f"prefer_free: {_yaml_scalar('true')}",
+            f"cost_lane: {_yaml_scalar('true')}",
+        ])
+        frontmatter = "\n".join(frontmatter_lines)
+    frontmatter = f"{frontmatter}\n---\n\n"
     markdown = f"{frontmatter}{body}".strip()
     return markdown[:MAX_DEFINITION_LENGTH]
 
@@ -626,6 +634,7 @@ def generate_agent_draft(project_id: str, candidate: dict, db: Database | None =
     tools = _infer_tools(project_id, candidate)
     model = _infer_model_alias(candidate)
     description = _summarize_candidate_description(project_id, candidate)
+    lane = str(readiness.get("lane") or "shared")
     draft = {
         "id": draft_id,
         "project_id": project_id,
@@ -636,7 +645,10 @@ def generate_agent_draft(project_id: str, candidate: dict, db: Database | None =
         "model": model,
         "export_format": "claude-code",
         "pattern_hash": fingerprint,
-        "lane": readiness.get("lane"),
+        "lane": lane,
+        "cost_lane": lane == "cost_lane",
+        "preferred_tier": "low" if lane == "cost_lane" else str(candidate.get("tier") or ""),
+        "prefer_free": lane == "cost_lane",
         "recurrence_count": readiness.get("recurrence_count"),
         "eval_quality": readiness.get("eval_quality"),
         "examples": _coerce_examples(candidate),
@@ -1866,6 +1878,48 @@ class AgentRegistry:
 # Phase 10: Draft Gate and Lane Detection
 # ---------------------------------------------------------------------------
 
+VALID_AGENT_LANES = frozenset({"project", "shared", "cost_lane"})
+
+
+def _qualifies_cost_lane(pattern: Mapping[str, object]) -> bool:
+    """Return True when a pattern should draft into the cost_lane."""
+    tier = str(pattern.get("tier", "") or "").strip().lower()
+    if tier != "low":
+        return False
+    recurrence_count = _coerce_nonnegative_int(
+        pattern.get("occurrence_count", pattern.get("recurrence_count", 0))
+    )
+    if recurrence_count < 5:
+        return False
+    if _coerce_bool(pattern.get("rework_detected", False)):
+        return False
+    try:
+        eval_quality = float(pattern.get("eval_quality", 0.0) or 0.0)
+        if not math.isfinite(eval_quality):
+            eval_quality = 0.0
+    except (TypeError, ValueError):
+        eval_quality = 0.0
+    return eval_quality >= 0.70
+
+
+def _resolve_lane(pattern: Mapping[str, object], project_id: str | None = None) -> str:
+    explicit_lane_raw = pattern.get("lane")
+    if isinstance(explicit_lane_raw, str):
+        normalized_lane = explicit_lane_raw.strip().lower()
+        if normalized_lane in VALID_AGENT_LANES:
+            return normalized_lane
+
+    if _qualifies_cost_lane(pattern):
+        return "cost_lane"
+
+    raw_desc = str(pattern.get("pattern_desc", "") or "")
+    if raw_desc.strip():
+        description = raw_desc
+    else:
+        fallback = str(pattern.get("description", "") or "")
+        description = fallback if fallback.strip() else ""
+    return _detect_lane(description, project_id)
+
 
 def _detect_lane(description: str, project_id: str | None = None) -> str:
     """
@@ -1957,13 +2011,11 @@ def evaluate_pattern_readiness(pattern: dict | None, project_id: str | None = No
         )
 
     # Honor explicit lane field when present (normalize whitespace and case).
-    explicit_lane_raw = pattern.get("lane")
-    if isinstance(explicit_lane_raw, str) and explicit_lane_raw.strip().lower() in {"project", "shared"}:
-        lane = explicit_lane_raw.strip().lower()
-    else:
-        lane = _detect_lane(description, project_id)
+    lane = _resolve_lane(pattern, project_id)
 
-    recurrence_count = _coerce_nonnegative_int(pattern.get("occurrence_count", 0))
+    recurrence_count = _coerce_nonnegative_int(
+        pattern.get("occurrence_count", pattern.get("recurrence_count", 0))
+    )
 
     rework_detected = _coerce_bool(pattern.get("rework_detected", False))
 
@@ -1975,12 +2027,12 @@ def evaluate_pattern_readiness(pattern: dict | None, project_id: str | None = No
     except (TypeError, ValueError):
         eval_quality = 0.0
 
-    if lane == "project":
-        recurrence_threshold = 5
-        eval_quality_threshold = 0.70
-    else:
+    if lane == "shared":
         recurrence_threshold = 10
         eval_quality_threshold = 0.85
+    else:
+        recurrence_threshold = 5
+        eval_quality_threshold = 0.70
 
     reason = None
     if recurrence_count < recurrence_threshold:
@@ -2052,6 +2104,10 @@ def check_draft_ready(db: Database, project_id: str, pattern_hash: str) -> bool:
         recurrence_threshold = int(readiness["recurrence_threshold"])
         eval_quality_threshold = float(readiness["eval_quality_threshold"])
         log_prefix = "[PROJECT]"
+    elif lane == "cost_lane":
+        recurrence_threshold = int(readiness["recurrence_threshold"])
+        eval_quality_threshold = float(readiness["eval_quality_threshold"])
+        log_prefix = "[COST]"
     else:  # lane == "shared"
         recurrence_threshold = int(readiness["recurrence_threshold"])
         eval_quality_threshold = float(readiness["eval_quality_threshold"])
@@ -2081,6 +2137,7 @@ def check_draft_ready(db: Database, project_id: str, pattern_hash: str) -> bool:
             "pattern_hash": pattern_hash,
             "description": description,
             "lane": lane,
+            "tier": pattern.get("tier"),
             "examples": examples,
             "recurrence_count": recurrence_count,
             "eval_quality": eval_quality,
@@ -2094,7 +2151,12 @@ def check_draft_ready(db: Database, project_id: str, pattern_hash: str) -> bool:
         )
         
         # Check for near-duplicates before enqueuing (per D-11)
-        similar = find_similar_agents(description, lane, db, project_id if lane == "project" else None)
+        similar = find_similar_agents(
+            description,
+            lane,
+            db,
+            project_id if lane in {"project", "cost_lane"} else None,
+        )
         if similar:
             log.warning(f"{log_prefix} Pattern matches {len(similar)} existing agents (similarity > 0.75):")
             for sim in similar:

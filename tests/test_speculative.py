@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Tests for speculative execution (Phase 6)."""
-import sys, os, unittest, tempfile
+import sys, os, unittest, tempfile, threading
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from shared.config import TGsConfig, ThresholdConfig, SPECULATION_MARGIN
+from shared.config import TGsConfig, ThresholdConfig, ParallelismConfig, SPECULATION_MARGIN
 from shared.planner import Subtask
 from shared.orchestrator import Provider
 from shared.speculative import (
@@ -12,6 +12,7 @@ from shared.speculative import (
     check_output_quality,
     SpeculativeExecutor,
     SpeculativeResult,
+    _speculation_worker_count,
 )
 from shared.db import Database
 
@@ -40,6 +41,34 @@ class MockProvider(Provider):
 
     def available_tiers(self):
         return list(self._tiers)
+
+
+class BarrierHigherTierProvider(MockProvider):
+    """Blocks higher-tier calls at a barrier to prove concurrent in-flight work."""
+
+    def __init__(self, barrier: threading.Barrier, **kwargs):
+        super().__init__(**kwargs)
+        self._barrier = barrier
+        self._lock = threading.Lock()
+        self.concurrent_high = 0
+        self.max_concurrent_high = 0
+
+    def execute(self, subtask, model, timeout=120):
+        if subtask.tier != "low":
+            with self._lock:
+                self.concurrent_high += 1
+                self.max_concurrent_high = max(
+                    self.max_concurrent_high,
+                    self.concurrent_high,
+                )
+            try:
+                self._barrier.wait(timeout=5)
+            except threading.BrokenBarrierError:
+                pass
+            finally:
+                with self._lock:
+                    self.concurrent_high -= 1
+        return super().execute(subtask, model, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +249,52 @@ class TestSpeculativeExecutor(unittest.TestCase):
         with SpeculativeExecutor(provider, self.config, db=None) as ex:
             result = ex.execute_speculative(subtask, 0.55)
         self.assertIsNotNone(result)
+
+    def test_speculation_worker_count_defaults_and_caps(self):
+        config = TGsConfig()
+        self.assertEqual(_speculation_worker_count(config), 1)
+
+        config.parallelism = ParallelismConfig(speculation_workers=3)
+        self.assertEqual(_speculation_worker_count(config), 3)
+
+        config.parallelism = ParallelismConfig(speculation_workers=99)
+        self.assertEqual(_speculation_worker_count(config), 8)
+
+    def test_speculation_workers_allows_concurrent_higher_tier(self):
+        worker_count = 3
+        self.config.parallelism = ParallelismConfig(speculation_workers=worker_count)
+        barrier = threading.Barrier(worker_count)
+        provider = BarrierHigherTierProvider(
+            barrier,
+            outputs={
+                "low": "Clean lower tier output with enough length " * 5,
+                "medium": "Higher tier output with enough length " * 5,
+            },
+        )
+        subtasks = [
+            Subtask(id=i, description=f"borderline task {i}", tier="medium")
+            for i in range(worker_count)
+        ]
+        results: list[SpeculativeResult | None] = []
+
+        with SpeculativeExecutor(provider, self.config) as executor:
+            threads = [
+                threading.Thread(
+                    target=lambda st=subtask: results.append(
+                        executor.execute_speculative(st, 0.55)
+                    ),
+                    daemon=True,
+                )
+                for subtask in subtasks
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+
+        self.assertEqual(len(results), worker_count)
+        self.assertEqual(provider.max_concurrent_high, worker_count)
 
 
 class TestSpeculativeResult(unittest.TestCase):

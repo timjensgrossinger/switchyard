@@ -11,7 +11,7 @@ Plan, classify, and orchestrate work. Prefer host-native execution using
 
 | Tool | Description |
 |---|---|
-| `route_task(task)` | Classify complexity → `{tier, model, score, execution_hint, quick_action}` |
+| `route_task(task)` | Classify complexity → `{tier, model, host_model?, execution_hint, quick_action}`; `execution_hint` includes `host_native_model`, `host_native_method`, and `mode: host_native \| delegate` |
 | `plan_task(task)` | Planner-based decomposition for multi-file work |
 | `decompose_task(task)` | Alias for `plan_task`; preferred entry point for multi-concern tasks |
 | `fleet_plan(task)` | Like decompose but returns ready-to-run parallel agent commands |
@@ -43,7 +43,7 @@ execute_subtask(
 → Returns: {result, provider, model, tier, fallback_used, file_written, lines_written}
 ```
 
-See [CONFIGURATION.md](CONFIGURATION.md) for spillover, effort defaults, and router-only overrides.
+See [config.example.yaml](../config.example.yaml) and [INSTRUCTIONS.md](../INSTRUCTIONS.md) for `routing_policy`, `execute_subtask_guard_strict`, `low_tier_execute_subtask`, effort defaults, and router-only overrides.
 
 ## Learning
 
@@ -65,6 +65,7 @@ Approval workflow: `agent_queue_list`, `agent_queue_approve`, `agent_queue_rejec
 | `memory_get` | Read a memory entry |
 | `memory_set` | Store a memory entry |
 | `memory_delete` | Delete a memory entry |
+| `memory_search(query, scope?, project_id?, limit?)` | FTS5 search across memory values (no embeddings) |
 
 ## Cache and task inspection
 
@@ -84,6 +85,7 @@ Approval workflow: `agent_queue_list`, `agent_queue_approve`, `agent_queue_rejec
 
 | Tool | Description |
 |---|---|
+| `inspect_spend(since?)` | Aggregated spend/savings from delegated subtasks; includes `usage_state` when windows configured |
 | `check_providers()` | List detected CLIs, models, router-only vs delegation flags |
 | `inspect_status(project_id)` | Project readiness, limits, fanout state |
 | `approval_queue_list(project_id)` | Pending approval queue |

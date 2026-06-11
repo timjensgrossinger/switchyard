@@ -5,6 +5,9 @@
 parallelism:
   enabled: true
   max_workers: 0
+  # Opt-in throughput tuning (safe defaults preserve prior behavior):
+  speculation_workers: 1   # concurrent higher-tier speculation lanes (cap 8)
+  warm_path_workers: 2     # parallel rework eval batch size (cap 8)
 
 swarm:
   max_agents: 12
@@ -79,9 +82,13 @@ providers:
     high: 120
 
 routing_policy:
-  # default | strict | advisory | custom
+  # default | guarded | advisory | custom  (strict is deprecated → guarded)
   mode: default
   shells: {}
+
+# When true, low-tier delegate guards hard-block Edit/Write until execute_subtask runs.
+# Default false — guarded mode allows host-native edits after route_task.
+execute_subtask_guard_strict: false
 
 routing_exceptions:
   # Built-in defaults already cover Markdown and known AI instruction files.
@@ -109,6 +116,13 @@ surgical_edits:
   max_file_bytes: 32768
   blocks_max_file_bytes: 131072
   length_ratio_min: 0.5
+
+orchestrator:
+  # End-of-run synthesis merge strategy:
+  # off = single-pass only; auto = map-reduce when outputs exceed chunk size;
+  # always = map-reduce even for small result sets.
+  synthesis_map_reduce: auto
+  synthesis_chunk_chars: 12000
 
 resilience:
   retry:

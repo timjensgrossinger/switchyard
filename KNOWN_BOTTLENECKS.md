@@ -4,8 +4,13 @@
 
 1. **Provider round-trip latency** — planner, subtask execution, and synthesis still rely on blocking CLI subprocess calls, so process startup and remote model latency are now the dominant cost.
 2. **Serial planner and synthesis stages** — wave parallelism only speeds up the middle of execution because planning happens once up front and synthesis happens once at the end.
-3. **Single-lane speculative fallback** — higher-tier speculative work is funneled through a single-worker pool, so borderline tasks serialize on the expensive path.
-4. **Sequential warm-path eval** — background rework evaluation processes prompts one at a time, which can backlog when multiple rework events land together.
+3. **Speculative fallback pool** — partially addressed: `parallelism.speculation_workers` (default `1`) scales the higher-tier speculation pool; planner/synthesis remain serial.
+4. **Warm-path eval batching** — partially addressed: `parallelism.warm_path_workers` (default `2`) parallelizes rework eval prompts inside each warm-path batch.
+
+## Previously documented (now configurable)
+
+- Single-lane speculative fallback → set `parallelism.speculation_workers` to `2`–`4` for borderline-heavy waves (opt-in; some providers may not be thread-safe).
+- Sequential warm-path eval per batch → raise `parallelism.warm_path_workers` up to `8`.
 
 ## Not primary bottlenecks right now
 

@@ -47,6 +47,9 @@ from .planner import Subtask
 
 log = logging.getLogger(__name__)
 
+_DEFAULT_SPECULATION_WORKERS = 1
+_MAX_SPECULATION_WORKERS = 8
+
 # ---------------------------------------------------------------------------
 # Compiled error pattern cache
 # ---------------------------------------------------------------------------
@@ -179,6 +182,35 @@ def check_output_quality(output: str | None) -> TypeGuard[str]:
     return True
 
 
+def _speculation_worker_count(config: TGsConfig) -> int:
+    """Return the speculation thread-pool size (default 1, hard-capped at 8)."""
+    raw = getattr(config.parallelism, "speculation_workers", _DEFAULT_SPECULATION_WORKERS)
+    try:
+        workers = int(raw)
+    except (TypeError, ValueError):
+        log.debug(
+            "speculation_workers %r is not an integer; using default %d",
+            raw,
+            _DEFAULT_SPECULATION_WORKERS,
+        )
+        return _DEFAULT_SPECULATION_WORKERS
+    if workers < 1:
+        log.debug(
+            "speculation_workers %d is below minimum 1; using default %d",
+            workers,
+            _DEFAULT_SPECULATION_WORKERS,
+        )
+        return _DEFAULT_SPECULATION_WORKERS
+    if workers > _MAX_SPECULATION_WORKERS:
+        log.debug(
+            "speculation_workers %d exceeds cap %d; using cap",
+            workers,
+            _MAX_SPECULATION_WORKERS,
+        )
+        return _MAX_SPECULATION_WORKERS
+    return workers
+
+
 # ---------------------------------------------------------------------------
 # SpeculativeExecutor
 # ---------------------------------------------------------------------------
@@ -193,8 +225,9 @@ class SpeculativeExecutor:
     2. The lower-tier model is free (model name contains ``"mini"``).
 
     If both conditions hold the lower-tier call is made **synchronously** (on
-    the calling thread) while the higher-tier call is queued in a single
-    background :class:`~concurrent.futures.ThreadPoolExecutor` thread.  The
+    the calling thread) while the higher-tier call is queued in a background
+    :class:`~concurrent.futures.ThreadPoolExecutor` sized by
+    ``config.parallelism.speculation_workers`` (default 1, cap 8).  The
     lower-tier result is quality-checked; if it passes the higher-tier future
     is simply abandoned (its result discarded).  If the lower tier fails
     quality the method blocks until the higher-tier future resolves and returns
@@ -220,8 +253,13 @@ class SpeculativeExecutor:
         self._provider = provider
         self._config = config
         self._db = db
-        # Single speculation thread — only one concurrent higher-tier call.
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speculative")
+        worker_count = _speculation_worker_count(config)
+        self._pool = ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="speculative",
+        )
+        self._worker_count = worker_count
+        self._logged_worker_count = False
 
         if db is not None:
             self._ensure_log_table()
@@ -403,6 +441,13 @@ class SpeculativeExecutor:
                 higher_tier,
             )
             return None
+
+        if not self._logged_worker_count:
+            log.info(
+                "speculative executor using %d background worker(s)",
+                self._worker_count,
+            )
+            self._logged_worker_count = True
 
         lower_model = self._provider.resolve_model(lower_tier)
         higher_model = self._provider.resolve_model(higher_tier)

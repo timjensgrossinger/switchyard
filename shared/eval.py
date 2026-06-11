@@ -11,7 +11,11 @@ Three responsibilities:
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, Future as ConcurrentFuture
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    Future as ConcurrentFuture,
+    as_completed,
+)
 import difflib
 import logging
 import re
@@ -27,12 +31,37 @@ from .outcomes import compute_learning_outcome_snapshot
 log = logging.getLogger(__name__)
 _BACKGROUND_LOOP: asyncio.AbstractEventLoop | None = None
 
-# Module-level daemon executor pool for warm-path evaluation (Wave 3: FNDX-03)
-# Uses 2 workers to avoid resource exhaustion while yielding priority to hot-path
-_WARM_PATH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2,
-    thread_name_prefix="warm-path-",
-)
+# Module-level daemon executor pool for warm-path evaluation (Wave 3: FNDX-03).
+# Sized lazily from config.parallelism.warm_path_workers on first spawn.
+_WARM_PATH_EXECUTOR: ThreadPoolExecutor | None = None
+_WARM_PATH_EXECUTOR_WORKERS: int | None = None
+_WARM_PATH_WORKER_CAP = 8
+_WARM_PATH_WORKER_DEFAULT = 2
+
+
+def _warm_path_worker_count(config: TGsConfig | None) -> int:
+    """Return warm-path worker count from config (default 2, capped at 8)."""
+    if config is None:
+        return _WARM_PATH_WORKER_DEFAULT
+    try:
+        workers = int(config.parallelism.warm_path_workers)
+    except (TypeError, ValueError):
+        return _WARM_PATH_WORKER_DEFAULT
+    return max(1, min(_WARM_PATH_WORKER_CAP, workers))
+
+
+def _get_warm_path_executor(workers: int) -> ThreadPoolExecutor:
+    """Lazy-init or resize the module-level warm-path spawn executor."""
+    global _WARM_PATH_EXECUTOR, _WARM_PATH_EXECUTOR_WORKERS
+    if _WARM_PATH_EXECUTOR is None or _WARM_PATH_EXECUTOR_WORKERS != workers:
+        if _WARM_PATH_EXECUTOR is not None:
+            _WARM_PATH_EXECUTOR.shutdown(wait=False)
+        _WARM_PATH_EXECUTOR = ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="warm-path-",
+        )
+        _WARM_PATH_EXECUTOR_WORKERS = workers
+    return _WARM_PATH_EXECUTOR
 
 
 # ---------------------------------------------------------------------------
@@ -586,13 +615,26 @@ class BackgroundEvaluator:
             return []
 
         results: list[EvalResult] = []
+        workers = _warm_path_worker_count(self._config)
 
-        for pd in prompts:
-            try:
-                result = self._eval_one(pd, model)
-                results.append(result)
-            except Exception:
-                log.warning("Background eval failed for %s", pd.file_path, exc_info=True)
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="warm-path-eval-",
+        ) as eval_pool:
+            futures = {
+                eval_pool.submit(self._eval_one, pd, model): pd
+                for pd in prompts
+            }
+            for future in as_completed(futures):
+                pd = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception:
+                    log.warning(
+                        "Background eval failed for %s",
+                        pd.file_path,
+                        exc_info=True,
+                    )
 
         log.info("Warm path complete: %d evals processed",
                  len(results))
@@ -625,8 +667,9 @@ class BackgroundEvaluator:
                 self._warm_path_disabled_until = None
                 self._warm_path_failures = 0
 
-        # Submit to daemon ThreadPoolExecutor
-        future = _WARM_PATH_EXECUTOR.submit(
+        workers = _warm_path_worker_count(self._config)
+        executor = _get_warm_path_executor(workers)
+        future = executor.submit(
             self._run_warm_path_sync,
             tracker,
             rework_events,

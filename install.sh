@@ -862,7 +862,12 @@ if [[ "$HAS_CLAUDE" -eq 1 ]]; then
         fi
     fi
 
-    if python3 - "$CLAUDE_SETTINGS_JSON" "$HOOK_ACTION" <<'PY'
+    HOOK_SCRIPT="$INSTALL_DIR/shell/threnody-routing-hook.sh"
+    if [[ -f "$HOOK_SCRIPT" ]]; then
+        chmod +x "$HOOK_SCRIPT"
+    fi
+
+    if python3 - "$CLAUDE_SETTINGS_JSON" "$HOOK_ACTION" "$HOOK_SCRIPT" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -872,6 +877,7 @@ path = Path(sys.argv[1]).resolve()
 if not str(path).startswith(str(_home)):
     raise SystemExit(f"path outside home: {path}")
 action = sys.argv[2]
+hook_script = sys.argv[3]
 path.parent.mkdir(parents=True, exist_ok=True)
 
 if path.exists():
@@ -895,20 +901,30 @@ pre_tool_use = hooks.get("PreToolUse")
 if not isinstance(pre_tool_use, list):
     pre_tool_use = []
 
+def _is_managed_routing_hook(hook: object) -> bool:
+    if not isinstance(hook, dict):
+        return False
+    if (
+        hook.get("type") == "mcp_tool"
+        and hook.get("server") in {"Threnody", "TGs-router"}
+        and hook.get("tool") == "validate_routing_guard"
+    ):
+        return True
+    if hook.get("type") == "command":
+        command = str(hook.get("command") or "")
+        if "threnody-routing-hook" in command:
+            return True
+    return False
+
+
 managed_entry = {
     "matcher": "Edit|Write",
     "hooks": [
         {
-            "type": "mcp_tool",
-            "server": "Threnody",
-            "tool": "validate_routing_guard",
-            "input": {
-                "target_file": "${tool_input.file_path}",
-                "tool_name": "${tool_name}",
-                "cwd": "${cwd}"
-            }
+            "type": "command",
+            "command": hook_script,
         }
-    ]
+    ],
 }
 
 filtered = []
@@ -920,13 +936,7 @@ for group in pre_tool_use:
     managed = False
     if isinstance(group_hooks, list):
         for hook in group_hooks:
-            if not isinstance(hook, dict):
-                continue
-            if (
-                hook.get("type") == "mcp_tool"
-                and hook.get("server") == "Threnody"
-                and hook.get("tool") == "validate_routing_guard"
-            ):
+            if _is_managed_routing_hook(hook):
                 managed = True
                 break
     if not managed:

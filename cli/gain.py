@@ -1,4 +1,4 @@
-"""CLI for cost savings dashboard — `threnody gain`."""
+"""CLI for cost savings dashboard — `threnody gain` and `threnody inspect spend`."""
 from __future__ import annotations
 
 import argparse
@@ -10,23 +10,19 @@ from pathlib import Path
 
 def _get_db():
     import sys as _sys
+
     _sys.path.insert(0, str(Path(__file__).parent.parent))
+    from shared.config import DB_PATH, TGsConfig
     from shared.db import Database
-    db_path = Path.home() / ".local" / "lib" / "Threnody" / "cache.db"
+
+    config_path = Path.home() / ".local" / "lib" / "threnody" / "config.yaml"
+    db_path = DB_PATH
+    if config_path.exists():
+        try:
+            db_path = TGsConfig.from_yaml(config_path).db_path
+        except Exception:
+            db_path = DB_PATH
     return Database(db_path)
-
-
-def _parse_window(since: str) -> float:
-    """Parse '7d', '30d', '24h' into a since_ts float."""
-    now = time.time()
-    since = since.strip().lower()
-    if since.endswith("d"):
-        days = float(since[:-1])
-        return now - days * 86400
-    if since.endswith("h"):
-        hours = float(since[:-1])
-        return now - hours * 3600
-    return 0.0  # all time
 
 
 def _avg_compression_ratio(db, since_ts: float, group_col: str) -> dict[str, float | None]:
@@ -73,12 +69,36 @@ def _print_table(rows: list[dict], key_col: str, compression: dict | None = None
 
 def cmd_gain(args) -> int:
     db = _get_db()
-    since_ts = _parse_window(args.since)
+    from shared.spend import build_spend_snapshot, parse_spend_window
+
+    since_ts, _ = parse_spend_window(args.since)
     group_col = "tier"
     if args.by == "provider":
         group_col = "provider_id"
     elif args.by == "model":
         group_col = "model"
+
+    if args.inspect:
+        try:
+            from shared.config import TGsConfig
+
+            config = TGsConfig.from_yaml()
+        except Exception:
+            config = None
+        snapshot = build_spend_snapshot(db, since=args.since, config=config)
+        if args.json:
+            print(json.dumps(snapshot, indent=2))
+            return 0
+        totals = snapshot.get("totals", {})
+        print(f"Spend window: {snapshot.get('window', args.since)}")
+        print(
+            f"  subtasks={totals.get('subtask_count', 0)}  "
+            f"est=${float(totals.get('est_cost_usd') or 0):.6f}  "
+            f"savings=${float(totals.get('savings_usd') or 0):.6f}  "
+            f"free={totals.get('free_subtask_pct', 0)}%"
+        )
+        print(f"  {snapshot.get('disclaimer', '')}")
+        return 0
 
     rows = db.get_cost_summary(since_ts=since_ts, group_by=group_col)
     compression = _avg_compression_ratio(db, since_ts, group_col)
@@ -115,6 +135,11 @@ def main() -> int:
     parser.add_argument("--by", choices=["tier", "provider", "model"], default="tier")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--history", action="store_true", help="Show per-run rows")
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Full spend snapshot (same data as inspect_spend MCP tool)",
+    )
     args = parser.parse_args()
     return cmd_gain(args)
 
