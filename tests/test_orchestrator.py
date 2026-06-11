@@ -1,0 +1,999 @@
+#!/usr/bin/env python3
+"""
+Tests for shared/orchestrator.py parallel wave execution.
+"""
+import sys
+import tempfile
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pytest
+
+from shared.config import PLANNER_ALLOW_TOPOLOGY_FALLBACK, TGsConfig
+from shared.db import Database
+from shared.orchestrator import AgentResult, Orchestrator, Provider, seed_resume_from_checkpoint
+from shared.planner import CLIBackend, ExecutionPlan, Planner, PlannerParseError, Subtask
+
+
+class DummyBackend(CLIBackend):
+    def call(
+        self,
+        prompt: str,
+        model: str | None = None,
+        timeout: int = 120,
+    ) -> str | None:
+        return None
+
+
+class DummyProvider(Provider):
+    def resolve_model(self, tier: str) -> str:
+        return f"dummy-{tier}"
+
+    def execute(self, subtask: Subtask, model: str, timeout: int = 120) -> str | None:
+        return f"{model}:{subtask.id}"
+
+    def available_tiers(self) -> list[str]:
+        return ["low", "medium", "high"]
+
+    def provider_info(self) -> dict:
+        return {"primary": "dummy-provider"}
+
+
+class EmptyProvider(DummyProvider):
+    def execute(self, subtask: Subtask, model: str, timeout: int = 120) -> str | None:
+        return None
+
+
+def test_execute_wave_rejects_empty_provider_output() -> None:
+    config = _build_config(False)
+    config.output_quality_retry_enabled = False
+    orchestrator = Orchestrator(config, EmptyProvider(), DummyPlanner())
+
+    with pytest.raises(RuntimeError, match="no output for subtask\\(s\\): 1"):
+        orchestrator.execute_wave(
+            1,
+            [Subtask(id=1, description="empty", tier="low", model="dummy-low")],
+        )
+
+
+def test_quality_check_allows_exception_handler_pass() -> None:
+    orchestrator = Orchestrator(
+        _build_config(False),
+        DummyProvider(),
+        DummyPlanner(),
+    )
+
+    output = """try:
+    mean([])
+except ValueError:
+    pass
+"""
+
+    assert orchestrator._check_output_quality_for_retry(output) is None
+
+
+def test_valid_coordinator_json_skips_generic_quality_retry() -> None:
+    class CoordinatorProvider(TrackingProvider):
+        def execute(
+            self,
+            subtask: Subtask,
+            model: str,
+            timeout: int = 120,
+        ) -> str:
+            self.execute_calls.append((subtask.id, model, timeout))
+            return (
+                '{"verdict":"complete","amendment":null,"next_work":{},'
+                '"synthesis":{"summary_text":"completed without errors"},'
+                '"fallback_reason":null}'
+            )
+
+    provider = CoordinatorProvider()
+    orchestrator = Orchestrator(
+        _build_config(False),
+        provider,
+        DummyPlanner(),
+    )
+
+    result = orchestrator.execute_subtask(
+        Subtask(
+            id=1,
+            description="coordinate",
+            tier="low",
+            model="dummy-low",
+            is_coordinator=True,
+        )
+    )
+
+    assert result.tier == "low"
+    assert provider.execute_calls == [(1, "dummy-low", 120)]
+
+
+class DummyPlanner(Planner):
+    def __init__(self) -> None:
+        self._backend = DummyBackend()
+
+    def plan(self, *args, **kwargs):  # pragma: no cover - not exercised here
+        raise NotImplementedError
+
+
+class RaisingPlanner(DummyPlanner):
+    def plan(self, *args, **kwargs):
+        raise PlannerParseError("Planner returned no output")
+
+
+class StubOrchestrator(Orchestrator):
+    def __init__(self, config: TGsConfig, db: Database) -> None:
+        super().__init__(config, DummyProvider(), DummyPlanner(), db=db)
+
+    def execute_subtask(
+        self,
+        subtask: Subtask,
+        timeout: int = 120,
+        score: float | None = None,
+        *,
+        execution_id: str | None = None,
+        plan_revision: int = 1,
+        current_wave: int | None = None,
+        prefetched_artifacts: list[dict[str, object]] | None = None,
+    ) -> AgentResult:
+        assert self._db is not None
+        self._db.log_agent_result(
+            session_id="wave-test",
+            task_hash=f"task-{subtask.id}",
+            agent_id=subtask.id,
+            tier=subtask.tier,
+            model="dummy-low",
+        )
+        time.sleep(0.25)
+        return AgentResult(
+            subtask_id=subtask.id,
+            tier=subtask.tier,
+            model="dummy-low",
+            output=f"completed {subtask.id}",
+            token_count=1,
+        )
+
+
+class FailingProvider(Provider):
+    def resolve_model(self, tier: str) -> str:
+        return f"dummy-{tier}"
+
+    def execute(self, subtask: Subtask, model: str, timeout: int = 120) -> str | None:
+        raise RuntimeError("provider failure")
+
+    def available_tiers(self) -> list[str]:
+        return ["low", "medium", "high"]
+
+
+class TrackingProvider(DummyProvider):
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[int, str, int]] = []
+        self.resolve_calls: list[str] = []
+
+    def resolve_model(self, tier: str) -> str:
+        self.resolve_calls.append(tier)
+        return super().resolve_model(tier)
+
+    def execute(self, subtask: Subtask, model: str, timeout: int = 120) -> str | None:
+        self.execute_calls.append((subtask.id, model, timeout))
+        return super().execute(subtask, model, timeout)
+
+
+class TwoArgProvider(DummyProvider):
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[int, str]] = []
+
+    def execute(
+        self,
+        subtask: Subtask,
+        model: str,
+        timeout: int = 120,
+    ) -> str | None:
+        del timeout
+        self.execute_calls.append((subtask.id, model))
+        return f"{model}:{subtask.id}"
+
+
+def _build_subtasks() -> list[Subtask]:
+    return [
+        Subtask(id=1, description="subtask 1", tier="low", model="dummy-low"),
+        Subtask(id=2, description="subtask 2", tier="low", model="dummy-low"),
+        Subtask(id=3, description="subtask 3", tier="low", model="dummy-low"),
+        Subtask(id=4, description="subtask 4", tier="low", model="dummy-low"),
+    ]
+
+
+def _build_config(enabled: bool) -> TGsConfig:
+    config = TGsConfig()
+    config.parallelism.enabled = enabled
+    config.parallelism.max_workers = 4
+    return config
+
+
+def _build_plan(topology: str, *, explicit: bool = True) -> ExecutionPlan:
+    subtasks = [
+        Subtask(id=1, description="root", tier="low", model="dummy-low"),
+        Subtask(id=2, description="child-a", tier="low", model="dummy-low", depends_on=[1]),
+        Subtask(id=3, description="child-b", tier="low", model="dummy-low", depends_on=[1, 2]),
+    ]
+    return ExecutionPlan(
+        analysis="plan",
+        subtasks=subtasks,
+        waves=[[1], [2], [3]],
+        total_agents=3,
+        strategy="dag",
+        topology=topology,
+        _topology_explicit=explicit,
+    )
+
+
+def _run_wave(enabled: bool, db_path: Path) -> float:
+    db = Database(db_path)
+    try:
+        orchestrator = StubOrchestrator(_build_config(enabled), db)
+        started = time.perf_counter()
+        results = orchestrator.execute_wave(0, _build_subtasks())
+        elapsed = time.perf_counter() - started
+        assert {result.subtask_id for result in results} == {1, 2, 3, 4}
+        with db.conn() as conn:
+            telemetry_rows = conn.execute(
+                "SELECT COUNT(*) FROM telemetry WHERE session_id = ?",
+                ("wave-test",),
+            ).fetchone()[0]
+        assert telemetry_rows == 4
+        return elapsed
+    finally:
+        db.close()
+
+
+def test_wave_parallelism(caplog) -> None:
+    """Parallel execution should be faster and fall back cleanly when disabled."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        parallel_elapsed = _run_wave(True, tmpdir_path / "parallel.db")
+        serial_elapsed = _run_wave(False, tmpdir_path / "serial.db")
+
+        assert parallel_elapsed < 0.7
+        assert serial_elapsed > parallel_elapsed + 0.3
+
+        fallback_db = Database(tmpdir_path / "fallback.db")
+        try:
+            fallback_orchestrator = StubOrchestrator(_build_config(True), fallback_db)
+            fallback_orchestrator._parallelism_worker_db_check = lambda: False
+            caplog.clear()
+            started = time.perf_counter()
+            results = fallback_orchestrator.execute_wave(0, _build_subtasks())
+            fallback_elapsed = time.perf_counter() - started
+            assert {result.subtask_id for result in results} == {1, 2, 3, 4}
+            assert fallback_elapsed > parallel_elapsed + 0.3
+            assert "falling back to serial execution" in caplog.text
+        finally:
+            fallback_db.close()
+
+
+def test_execute_dag_runner_persists_declared_topology() -> None:
+    """Explicit topology runners should preserve declared topology in swarm state."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "runner-topology.db")
+        try:
+            orchestrator = StubOrchestrator(_build_config(False), db)
+            orchestrator._execute_dag_runner(
+                _build_plan("dag", explicit=True),
+                execution_id="runner-topology",
+                plan_revision=1,
+            )
+            with db.conn() as conn:
+                swarm_row = conn.execute(
+                    "SELECT topology FROM swarm_runs WHERE swarm_id = ?",
+                    ("runner-topology",),
+                ).fetchone()
+            assert swarm_row is not None
+            assert swarm_row[0] == "dag"
+        finally:
+            db.close()
+
+
+def test_run_falls_back_when_planner_returns_no_output() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "planner-fallback.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(
+                _build_config(False),
+                provider,
+                RaisingPlanner(),
+                db=db,
+            )
+
+            result = orchestrator.run(
+                "implement the feature directly",
+                execution_id="swarm-fallback",
+            )
+
+            runtime_plan = result["plan"]
+            assert runtime_plan is not None
+            assert runtime_plan.topology == "linear"
+            assert runtime_plan.total_agents == 1
+            assert runtime_plan.subtasks[0].description == "implement the feature directly"
+            assert provider.resolve_calls == ["medium"]
+            assert provider.execute_calls == [(1, "dummy-medium", 120)]
+
+            summary = db.get_swarm_summary("swarm-fallback")
+            assert summary is not None
+            assert summary["status"] == "completed"
+
+            payload = db.get_latest_swarm_event_payload("swarm-fallback", "planner_fallback")
+            assert payload is not None
+            assert payload["reason"] == "Planner returned no output"
+            assert payload["fallback_topology"] == "linear"
+            assert payload["fallback_agents"] == 1
+        finally:
+            db.close()
+
+
+def test_execute_subtask_falls_back_to_two_arg_provider_signature() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "two-arg-provider.db")
+        try:
+            provider = TwoArgProvider()
+            orchestrator = Orchestrator(
+                _build_config(False),
+                provider,
+                DummyPlanner(),
+                db=db,
+            )
+            result = orchestrator.execute_subtask(
+                Subtask(id=7, description="two-arg", tier="low", model="dummy-low")
+            )
+
+            assert result.output == "dummy-low:7"
+            assert provider.execute_calls == [(7, "dummy-low")]
+        finally:
+            db.close()
+
+
+def test_seed_resume_from_checkpoint_rejects_non_mapping() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "resume-type.db")
+        try:
+            with pytest.raises(TypeError, match="checkpoint must be a mapping"):
+                seed_resume_from_checkpoint(None, db=db)  # type: ignore[arg-type]
+        finally:
+            db.close()
+
+
+def test_wave_parallel_execution() -> None:
+    """
+    Test parallel wave execution (05-V0-03: FNDX-02 requirement).
+    
+    Verifies:
+    1. Wall time is less than serial time (indicating parallelism)
+    2. No exceptions raised during parallel execution
+    3. All results are returned
+    4. ThreadPoolExecutor with configured max_workers is used
+    
+    FNDX-02 requirement: Wave execution uses ThreadPoolExecutor with
+    configurable concurrency cap so multi-agent waves run in true parallel.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        db = Database(tmpdir_path / "parallel_test.db")
+        try:
+            config = TGsConfig()
+            config.parallelism.enabled = True
+            config.parallelism.max_workers = 4
+            
+            orchestrator = StubOrchestrator(config, db)
+            
+            # Create 3 subtasks, each takes ~0.25s
+            subtasks = [
+                Subtask(id=1, description="subtask 1", tier="low", model="dummy-low"),
+                Subtask(id=2, description="subtask 2", tier="low", model="dummy-low"),
+                Subtask(id=3, description="subtask 3", tier="low", model="dummy-low"),
+            ]
+            
+            # Measure parallel execution
+            start_time = time.perf_counter()
+            results = orchestrator.execute_wave(0, subtasks)
+            parallel_elapsed = time.perf_counter() - start_time
+            
+            # Verify all results returned
+            assert len(results) == 3, f"Expected 3 results, got {len(results)}"
+            assert {r.subtask_id for r in results} == {1, 2, 3}
+            
+            # Wall time should be < 0.6s for parallel (3 * 0.25s each in parallel)
+            # Serial would be ~0.75s+ (3 * 0.25s sequentially)
+            # Allow generous margin for slow CI systems
+            assert parallel_elapsed < 0.6, f"Parallel execution took {parallel_elapsed:.2f}s (expected < 0.6s)"
+        finally:
+            db.close()
+
+
+def test_wave_serial_fallback() -> None:
+    """
+    Test wave serial fallback execution (05-V0-04: FNDX-02 requirement).
+    
+    Verifies:
+    1. When parallelism.enabled=False, wave uses serial execution
+    2. Wall time >= expected serial time (no parallelism)
+    3. All results returned
+    4. No threading errors
+    
+    FNDX-02 requirement: Serial execution is the absolute last resort —
+    falls back cleanly when parallelism is disabled.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        db = Database(tmpdir_path / "serial_test.db")
+        try:
+            config = TGsConfig()
+            config.parallelism.enabled = False  # Disable parallelism
+            
+            orchestrator = StubOrchestrator(config, db)
+            
+            # Create 3 subtasks, each takes ~0.25s
+            subtasks = [
+                Subtask(id=1, description="subtask 1", tier="low", model="dummy-low"),
+                Subtask(id=2, description="subtask 2", tier="low", model="dummy-low"),
+                Subtask(id=3, description="subtask 3", tier="low", model="dummy-low"),
+            ]
+            
+            # Measure serial execution
+            start_time = time.perf_counter()
+            results = orchestrator.execute_wave(0, subtasks)
+            serial_elapsed = time.perf_counter() - start_time
+            
+            # Verify all results returned
+            assert len(results) == 3, f"Expected 3 results, got {len(results)}"
+            assert {r.subtask_id for r in results} == {1, 2, 3}
+            
+            # Wall time should be >= 0.7s for serial (3 * 0.25s sequentially)
+            # Allow margin for test variance
+            assert serial_elapsed >= 0.65, f"Serial execution took {serial_elapsed:.2f}s (expected >= 0.65s)"
+        finally:
+            db.close()
+
+
+def test_wave_single_subtask_is_serial() -> None:
+    """
+    Test that single-subtask waves use serial path (no ThreadPoolExecutor overhead).
+    
+    Verifies:
+    1. Single subtask wave executes successfully
+    2. No ThreadPoolExecutor overhead for trivial waves
+    3. Uses serial execution path even when parallelism.enabled=True
+    
+    FNDX-02 requirement: Serial execution is the last resort —
+    single subtask waves should never spawn a thread pool.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        db = Database(tmpdir_path / "single_test.db")
+        try:
+            config = TGsConfig()
+            config.parallelism.enabled = True
+            config.parallelism.max_workers = 4
+            
+            orchestrator = StubOrchestrator(config, db)
+            
+            # Single subtask
+            subtasks = [
+                Subtask(id=1, description="single subtask", tier="low", model="dummy-low"),
+            ]
+            
+            # Execute wave
+            start_time = time.perf_counter()
+            results = orchestrator.execute_wave(0, subtasks)
+            elapsed = time.perf_counter() - start_time
+            
+            # Verify result
+            assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+            assert results[0].subtask_id == 1
+            
+            # Should be fast (~0.25s) since single task avoids pool overhead
+            assert elapsed < 0.4, f"Single subtask took {elapsed:.2f}s (expected < 0.4s)"
+        finally:
+            db.close()
+
+
+def test_execute_plan_honors_prompt_requested_parallel_limit() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        db = Database(tmpdir_path / "plan_limit.db")
+        try:
+            config = TGsConfig()
+            config.parallelism.enabled = True
+            config.parallelism.max_workers = -1
+
+            orchestrator = StubOrchestrator(config, db)
+            subtasks = _build_subtasks()
+            plan = ExecutionPlan(
+                analysis="",
+                subtasks=subtasks,
+                waves=[[1, 2, 3, 4]],
+                total_agents=4,
+                strategy="parallel",
+            )
+
+            unlimited_started = time.perf_counter()
+            orchestrator.execute_plan(plan)
+            unlimited_elapsed = time.perf_counter() - unlimited_started
+
+            limited_started = time.perf_counter()
+            results = orchestrator.execute_plan(
+                plan,
+                task_description="fan this out but use max 2 agents",
+            )
+            limited_elapsed = time.perf_counter() - limited_started
+
+            assert len(results) == 4
+            assert limited_elapsed > unlimited_elapsed + 0.15
+            assert limited_elapsed < 0.95
+        finally:
+            db.close()
+
+
+def test_orchestrator_aborts_on_topology_mismatch_when_no_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "topology.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            plan = _build_plan("star")
+            with patch("shared.orchestrator.PLANNER_ALLOW_TOPOLOGY_FALLBACK", False):
+                with pytest.raises(ValueError, match="topology validation failed"):
+                    orchestrator.execute_plan(plan, execution_id="exec-1")
+        finally:
+            db.close()
+
+
+def test_orchestrator_allows_runtime_linear_fallback_when_flag_enabled(caplog) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "topology-fallback.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            plan = _build_plan("star")
+            with patch("shared.orchestrator.PLANNER_ALLOW_TOPOLOGY_FALLBACK", True):
+                results = orchestrator.execute_plan(plan, execution_id="exec-1")
+            assert {result.subtask_id for result in results.values()} == {1, 2, 3}
+            assert "topology validation failed" in caplog.text
+            assert "fallback to linear" in caplog.text
+        finally:
+            db.close()
+
+
+def test_execute_subtask_rejects_missing_model_before_provider_execution() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "missing-model.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(_build_config(False), provider, DummyPlanner(), db=db)
+            subtask = Subtask(id=12, description="missing model", tier="low")
+
+            with pytest.raises(ValueError, match="missing routed model metadata"):
+                orchestrator.execute_subtask(subtask)
+
+            assert provider.execute_calls == []
+            assert provider.resolve_calls == []
+        finally:
+            db.close()
+
+
+def test_execute_subtask_rejects_provider_mismatch_before_execution() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "provider-mismatch.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(_build_config(False), provider, DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=13,
+                description="provider mismatch",
+                tier="low",
+                model="planned-model",
+                provider_id="other-provider",
+            )
+
+            with pytest.raises(ValueError, match="provider_id 'other-provider'"):
+                orchestrator.execute_subtask(subtask)
+
+            assert provider.execute_calls == []
+            assert provider.resolve_calls == []
+        finally:
+            db.close()
+
+
+def test_execute_subtask_uses_routed_model_instead_of_resolving_tier() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "routed-model.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(_build_config(False), provider, DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=14,
+                description="use explicit model",
+                tier="low",
+                model="planned-model",
+                provider="dummy-provider",
+            )
+
+            result = orchestrator.execute_subtask(subtask)
+
+            assert result.output == "planned-model:14"
+            assert provider.execute_calls == [(14, "planned-model", 120)]
+            assert provider.resolve_calls == []
+        finally:
+            db.close()
+
+
+def test_execute_subtask_caches_provider_bound_tier_resolution() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "provider-bound-tier-cache.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(_build_config(False), provider, DummyPlanner(), db=db)
+
+            first = orchestrator.execute_subtask(
+                Subtask(
+                    id=140,
+                    description="provider-bound tier placeholder",
+                    tier="low",
+                    model="low",
+                    provider="dummy-provider",
+                )
+            )
+            second = orchestrator.execute_subtask(
+                Subtask(
+                    id=141,
+                    description="provider-bound tier placeholder",
+                    tier="low",
+                    model="low",
+                    provider="dummy-provider",
+                )
+            )
+
+            assert first.output == "dummy-low:140"
+            assert second.output == "dummy-low:141"
+            assert provider.resolve_calls == ["low"]
+        finally:
+            db.close()
+
+
+def test_execute_subtask_resolves_provider_bound_tier_placeholder() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "provider-bound-tier.db")
+        try:
+            provider = TrackingProvider()
+            orchestrator = Orchestrator(_build_config(False), provider, DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=141,
+                description="provider-bound tier placeholder",
+                tier="low",
+                model="low",
+                provider="dummy-provider",
+            )
+
+            result = orchestrator.execute_subtask(subtask)
+
+            assert result.output == "dummy-low:141"
+            assert provider.execute_calls == [(141, "dummy-low", 120)]
+            assert provider.resolve_calls == ["low"]
+        finally:
+            db.close()
+
+
+def test_execute_plan_fails_early_on_invalid_model_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "invalid-plan.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            plan = ExecutionPlan(
+                analysis="invalid",
+                subtasks=[Subtask(id=15, description="bad subtask", tier="low")],
+                waves=[[15]],
+                total_agents=1,
+                strategy="sequential",
+            )
+
+            with patch.object(orchestrator, "execute_wave", side_effect=AssertionError("wave should not run")):
+                with pytest.raises(ValueError, match="missing model metadata"):
+                    orchestrator.execute_plan(plan, execution_id="exec-invalid")
+        finally:
+            db.close()
+
+
+def test_publish_artifact_on_success() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "artifact-success.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=7,
+                description="produce summary",
+                tier="low",
+                model="dummy-low",
+                produces=["summary"],
+            )
+            result = orchestrator.execute_subtask(
+                subtask,
+                execution_id="exec-1",
+                plan_revision=3,
+                current_wave=2,
+            )
+            artifacts = db.query_artifacts("exec-1", 3, wave=2, artifact_types=["summary"])
+            assert result.output == "dummy-low:7"
+            assert len(artifacts) == 1
+            assert artifacts[0]["compact_summary"]["summary_text"] == "dummy-low:7"
+            assert artifacts[0]["compact_summary"]["artifact_ref"] == artifacts[0]["stable_ref"]
+            assert db._get_full_payload(artifacts[0]["stable_ref"]) == "dummy-low:7"
+        finally:
+            db.close()
+
+
+def test_publish_artifact_not_called_on_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "artifact-failure.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), FailingProvider(), DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=8,
+                description="produce summary",
+                tier="low",
+                model="dummy-low",
+                produces=["summary"],
+            )
+            with pytest.raises(RuntimeError, match="provider failure"):
+                orchestrator.execute_subtask(
+                    subtask,
+                    execution_id="exec-1",
+                    plan_revision=1,
+                    current_wave=1,
+                )
+            assert db.query_artifacts("exec-1", 1) == []
+        finally:
+            db.close()
+
+
+def test_publish_artifact_on_speculative_success() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "artifact-speculative.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            orchestrator._speculative = SimpleNamespace(
+                execute_speculative=lambda _subtask, _score: SimpleNamespace(
+                    output="speculative-output",
+                    tier_used="low",
+                    model_used="spec-model",
+                    token_estimate=4,
+                )
+            )
+            subtask = Subtask(
+                id=9,
+                description="produce summary",
+                tier="low",
+                model="dummy-low",
+                produces=["summary"],
+            )
+            result = orchestrator.execute_subtask(
+                subtask,
+                score=0.6,
+                execution_id="exec-2",
+                plan_revision=4,
+                current_wave=3,
+            )
+            artifacts = db.query_artifacts("exec-2", 4, wave=3, artifact_types=["summary"])
+            assert result.output == "speculative-output"
+            assert len(artifacts) == 1
+            assert db._get_full_payload(artifacts[0]["stable_ref"]) == "speculative-output"
+        finally:
+            db.close()
+
+
+def test_artifact_persistence_failure_does_not_abort_subtask(caplog) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "artifact-persist-warning.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=10,
+                description="produce summary",
+                tier="low",
+                model="dummy-low",
+                produces=["summary"],
+            )
+            with patch.object(db, "save_artifact", side_effect=RuntimeError("db unavailable")):
+                result = orchestrator.execute_subtask(
+                    subtask,
+                    execution_id="exec-3",
+                    plan_revision=1,
+                    current_wave=1,
+                )
+            assert result.output == "dummy-low:10"
+            assert "Failed to persist artifact 'summary' for subtask 10" in caplog.text
+            assert db.query_artifacts("exec-3", 1) == []
+        finally:
+            db.close()
+
+
+def test_no_wave_context_skips_artifact_persistence() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "artifact-no-wave.db")
+        try:
+            orchestrator = Orchestrator(_build_config(False), DummyProvider(), DummyPlanner(), db=db)
+            subtask = Subtask(
+                id=11,
+                description="produce summary",
+                tier="low",
+                model="dummy-low",
+                produces=["summary"],
+            )
+            result = orchestrator.execute_subtask(
+                subtask,
+                execution_id="exec-4",
+                plan_revision=1,
+            )
+            assert result.output == "dummy-low:11"
+            assert db.query_artifacts("exec-4", 1) == []
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# Additional focused regression tests for multi-provider spillover anchoring
+# ---------------------------------------------------------------------------
+def test_spillover_anchor_prefers_explicit_provider(tmp_path: Path) -> None:
+    """A routed provider_id should be anchored as primary even if another
+    provider is nominally cheaper in the registry plan.
+    """
+    db = Database(tmp_path / "spill-anchor.db")
+    try:
+        config = TGsConfig()
+        config.parallelism.enabled = False
+        orchestrator = Orchestrator(config, DummyProvider(), DummyPlanner(), db=db)
+
+        class ProviderA(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "a"}
+
+        class ProviderB(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "b"}
+
+        orchestrator._providers_map = {"a": ProviderA(), "b": ProviderB()}
+
+        class FakeRegistry:
+            def plan_spillover_allocation(self, tier, count, anchor_provider_id=None, **kwargs):
+                # Anchor to 'a' when requested regardless of cost ordering
+                if anchor_provider_id == "a":
+                    return {"primary": {"provider_id": "a"}, "assignments": [{"provider_id": "a", "slots": 2}, {"provider_id": "b", "slots": 2}], "remaining": 0}
+                return {"primary": {"provider_id": "b"}, "assignments": [{"provider_id": "b", "slots": 4}], "remaining": 0}
+
+        orchestrator._provider_registry = FakeRegistry()
+
+        subtasks = [
+            Subtask(id=1, description="s1", tier="low", model="m", provider_id="a"),
+            Subtask(id=2, description="s2", tier="low", model="m", provider_id="a"),
+            Subtask(id=3, description="s3", tier="low", model="m"),
+            Subtask(id=4, description="s4", tier="low", model="m"),
+        ]
+
+        results = orchestrator.execute_wave(0, subtasks)
+        assigned = {r.subtask_id: r.provider_name for r in results}
+        # Explicitly routed subtasks should use ProviderA
+        assert assigned[1] == "ProviderA"
+        assert assigned[2] == "ProviderA"
+    finally:
+        db.close()
+
+
+def test_same_tier_different_routed_providers_allocated_separately(tmp_path: Path) -> None:
+    """Subtasks routed to different explicit providers within the same tier
+    should be planned separately and not mixed across provider assignments.
+    """
+    db = Database(tmp_path / "spill-buckets.db")
+    try:
+        config = TGsConfig()
+        config.parallelism.enabled = False
+        orchestrator = Orchestrator(config, DummyProvider(), DummyPlanner(), db=db)
+
+        class ProviderA(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "a"}
+
+        class ProviderB(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "b"}
+
+        orchestrator._providers_map = {"a": ProviderA(), "b": ProviderB()}
+
+        class FakeRegistry:
+            def plan_spillover_allocation(self, tier, count, anchor_provider_id=None, **kwargs):
+                # When anchored to 'a' or 'b' return only that provider
+                if anchor_provider_id == "a":
+                    return {"primary": {"provider_id": "a"}, "assignments": [{"provider_id": "a", "slots": count}], "remaining": 0}
+                if anchor_provider_id == "b":
+                    return {"primary": {"provider_id": "b"}, "assignments": [{"provider_id": "b", "slots": count}], "remaining": 0}
+                return {"primary": None, "assignments": [], "remaining": count}
+
+        orchestrator._provider_registry = FakeRegistry()
+
+        subtasks = [
+            Subtask(id=1, description="s1", tier="low", model="m", provider_id="a"),
+            Subtask(id=2, description="s2", tier="low", model="m", provider_id="a"),
+            Subtask(id=3, description="s3", tier="low", model="m", provider_id="b"),
+            Subtask(id=4, description="s4", tier="low", model="m", provider_id="b"),
+        ]
+
+        results = orchestrator.execute_wave(0, subtasks)
+        assigned = {r.subtask_id: r.provider_name for r in results}
+        assert assigned[1] == "ProviderA"
+        assert assigned[2] == "ProviderA"
+        assert assigned[3] == "ProviderB"
+        assert assigned[4] == "ProviderB"
+    finally:
+        db.close()
+
+
+def test_allocator_shortfall_raises_from_execute_wave(tmp_path: Path) -> None:
+    """If the allocator returns a remaining > 0, execute_wave should raise
+    a clear RuntimeError indicating unallocated slots.
+    """
+    db = Database(tmp_path / "spill-shortfall.db")
+    try:
+        config = TGsConfig()
+        config.parallelism.enabled = False
+        orchestrator = Orchestrator(config, DummyProvider(), DummyPlanner(), db=db)
+
+        class ProviderA(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "a"}
+
+        orchestrator._providers_map = {"a": ProviderA()}
+
+        class FakeRegistry:
+            def plan_spillover_allocation(self, tier, count, anchor_provider_id=None, **kwargs):
+                return {"primary": {"provider_id": "a"}, "assignments": [{"provider_id": "a", "slots": 1}], "remaining": 1}
+
+        orchestrator._provider_registry = FakeRegistry()
+
+        subtasks = [
+            Subtask(id=1, description="s1", tier="low", model="m", provider_id="a"),
+            Subtask(id=2, description="s2", tier="low", model="m", provider_id="a"),
+        ]
+
+        with pytest.raises(RuntimeError, match="unallocated slots for tier 'low'"):
+            orchestrator.execute_wave(0, subtasks)
+    finally:
+        db.close()
+
+
+def test_result_metadata_provider_name_reflects_actual_provider_used(tmp_path: Path) -> None:
+    """AgentResult.provider_name should indicate the concrete provider used for
+    execution (i.e., the provider_override class name when assigned).
+    """
+    db = Database(tmp_path / "spill-metadata.db")
+    try:
+        config = TGsConfig()
+        config.parallelism.enabled = False
+        orchestrator = Orchestrator(config, DummyProvider(), DummyPlanner(), db=db)
+
+        class ProviderB(DummyProvider):
+            def provider_info(self) -> dict:
+                return {"primary": "b"}
+
+        orchestrator._providers_map = {"b": ProviderB()}
+
+        class FakeRegistry:
+            def plan_spillover_allocation(self, tier, count, anchor_provider_id=None, **kwargs):
+                return {"primary": {"provider_id": "b"}, "assignments": [{"provider_id": "b", "slots": count}], "remaining": 0}
+
+        orchestrator._provider_registry = FakeRegistry()
+
+        subtasks = [Subtask(id=10, description="s10", tier="low", model="m", provider_id="b")]
+        results = orchestrator.execute_wave(0, subtasks)
+        assert len(results) == 1
+        assert results[0].provider_name == "ProviderB"
+    finally:
+        db.close()

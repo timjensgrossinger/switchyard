@@ -1,0 +1,38 @@
+Threnody
+Copyright 2026 Tim Grossinger
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+================================================================================
+Third-Party Notices
+================================================================================
+
+Bundled data
+------------
+
+This product bundles model pricing data derived from LiteLLM
+(https://github.com/BerriAI/litellm), specifically
+model_prices_and_context_window.json.
+
+Copyright (c) 2023 Berri AI
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+Bundled file: shared/data/model_prices.json
+
+Runtime dependencies (not redistributed; installed via pip at runtime)
+--------------------------------------------------------------------
+
+- PyYAML — MIT License (https://github.com/yaml/pyyaml)
+- rich — MIT License (https://github.com/Textualize/rich)
+- questionary — MIT License (https://github.com/tmbo/questionary)
+  Transitive: prompt_toolkit — BSD-3-Clause License

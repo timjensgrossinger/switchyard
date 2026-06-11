@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Runtime data
+cache.db
+cache.db-wal
+cache.db-shm
+cache.db.bak.*
+cache.db.bak-wal
+cache.db.bak-shm
+.runtime/
+audit_secret
+providers.json
+threnody-status.json
+switchyard-status.json
+tgs-router-status.json
+
+# User config (has per-machine paths)
+config.yaml
+config.yaml.bak-*
+config.yaml.bak.*
+
+# Backup directory
+backup/
+
+# Copilot sandbox session state
+.copilot-sandbox/
+
+# Review artifacts
+review_*.json
+
+# Aider session state
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v*
+
+# Shell backups
+*.bak
+*.bak-*
+*.bak.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+*.log.[0-9]*
+
+# Phase 29: deterministic eval baseline (never commit)
+tests/eval/baseline.json
+
+# Internal planning artifacts (not part of public release)
+.planning/
+
+# Environment and secrets
+.env
+.env.*
+
+# TLS / key material
+*.pem
+*.key

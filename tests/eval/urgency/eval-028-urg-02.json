@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-urg-02",
+  "category": "urgency",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Production incident blocking release today: implement authentication middleware checks for the deploy pipeline, add error handling, and define a rollback threshold.",
+  "expected": {
+    "tier": "high",
+    "score_min": 0.95,
+    "score_max": 1.0,
+    "urgency_expected": true,
+    "fanout_expected": "none"
+  }
+}

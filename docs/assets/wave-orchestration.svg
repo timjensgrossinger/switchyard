@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" viewBox="0 0 800 220" role="img" aria-label="Parallel wave orchestration">
+  <rect width="800" height="220" fill="#0d1117" rx="8"/>
+  <text x="400" y="28" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="600" fill="#f0f6fc">Parallel wave orchestration</text>
+  <!-- Wave 1 -->
+  <text x="60" y="58" font-family="system-ui,sans-serif" font-size="12" fill="#8b949e">Wave 1</text>
+  <rect x="120" y="44" width="100" height="36" rx="4" fill="#21262d" stroke="#3fb950"/>
+  <rect x="240" y="44" width="100" height="36" rx="4" fill="#21262d" stroke="#3fb950"/>
+  <rect x="360" y="44" width="100" height="36" rx="4" fill="#21262d" stroke="#3fb950"/>
+  <text x="170" y="67" text-anchor="middle" font-size="11" fill="#c9d1d9">config.py</text>
+  <text x="290" y="67" text-anchor="middle" font-size="11" fill="#c9d1d9">models.py</text>
+  <text x="410" y="67" text-anchor="middle" font-size="11" fill="#c9d1d9">utils.py</text>
+  <!-- Wave 2 -->
+  <text x="60" y="118" font-family="system-ui,sans-serif" font-size="12" fill="#8b949e">Wave 2</text>
+  <rect x="180" y="104" width="120" height="36" rx="4" fill="#21262d" stroke="#58a6ff"/>
+  <rect x="320" y="104" width="120" height="36" rx="4" fill="#21262d" stroke="#58a6ff"/>
+  <text x="240" y="127" text-anchor="middle" font-size="11" fill="#c9d1d9">main.py</text>
+  <text x="380" y="127" text-anchor="middle" font-size="11" fill="#c9d1d9">api.py</text>
+  <!-- Wave 3 -->
+  <text x="60" y="178" font-family="system-ui,sans-serif" font-size="12" fill="#8b949e">Wave 3</text>
+  <rect x="240" y="164" width="140" height="36" rx="4" fill="#21262d" stroke="#f0883e"/>
+  <text x="310" y="187" text-anchor="middle" font-size="11" fill="#c9d1d9">integration verify</text>
+  <path d="M410 80 L410 104" stroke="#30363d" stroke-width="1" stroke-dasharray="4"/>
+  <path d="M310 140 L310 164" stroke="#30363d" stroke-width="1" stroke-dasharray="4"/>
+</svg>

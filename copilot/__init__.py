@@ -1,0 +1,1 @@
+"""Threnody Copilot CLI version."""

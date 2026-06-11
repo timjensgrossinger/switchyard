@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-low-06",
+  "category": "low_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Format the shell script for readability.",
+  "expected": {
+    "tier": "low",
+    "score_min": 0.08,
+    "score_max": 0.12,
+    "urgency_expected": false,
+    "fanout_expected": "favor_parallel"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-med-09",
+  "category": "medium_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Migrate worker.py queue.py scheduler.py to a shared middleware-backed execution module with explicit error handling and validation tests.",
+  "expected": {
+    "tier": "medium",
+    "score_min": 0.57,
+    "score_max": 0.65,
+    "urgency_expected": false,
+    "fanout_expected": "favor_parallel"
+  }
+}

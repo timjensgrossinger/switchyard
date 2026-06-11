@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="280" viewBox="0 0 900 280" role="img" aria-label="Approval-gated learning loop">
+  <rect width="900" height="280" fill="#0d1117" rx="8"/>
+  <text x="450" y="32" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" font-weight="600" fill="#f0f6fc">Self-learning agents  with your approval</text>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+  <!-- steps -->
+  <g font-family="system-ui,sans-serif" font-size="12" fill="#c9d1d9">
+    <rect x="30" y="70" width="110" height="48" rx="6" fill="#21262d" stroke="#30363d"/>
+    <text x="85" y="92" text-anchor="middle">Execute</text>
+    <text x="85" y="108" text-anchor="middle" fill="#8b949e">subtask</text>
+
+    <rect x="170" y="70" width="110" height="48" rx="6" fill="#21262d" stroke="#30363d"/>
+    <text x="225" y="92" text-anchor="middle">Track</text>
+    <text x="225" y="108" text-anchor="middle" fill="#8b949e">patterns</text>
+
+    <rect x="310" y="70" width="110" height="48" rx="6" fill="#21262d" stroke="#30363d"/>
+    <text x="365" y="92" text-anchor="middle">Draft</text>
+    <text x="365" y="108" text-anchor="middle" fill="#8b949e">agent</text>
+
+    <rect x="450" y="70" width="120" height="48" rx="6" fill="#1a2332" stroke="#f0883e" stroke-width="2"/>
+    <text x="510" y="92" text-anchor="middle" fill="#f0883e">You</text>
+    <text x="510" y="108" text-anchor="middle" fill="#f0883e">approve</text>
+
+    <rect x="600" y="70" width="110" height="48" rx="6" fill="#21262d" stroke="#30363d"/>
+    <text x="655" y="92" text-anchor="middle">Activate</text>
+    <text x="655" y="108" text-anchor="middle" fill="#8b949e">locally</text>
+
+    <rect x="740" y="70" width="130" height="48" rx="6" fill="#21262d" stroke="#3fb950"/>
+    <text x="805" y="92" text-anchor="middle" fill="#3fb950">Auto-match</text>
+    <text x="805" y="108" text-anchor="middle" fill="#8b949e">future work</text>
+  </g>
+  <!-- arrows -->
+  <path d="M140 94 H170" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M280 94 H310" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M420 94 H450" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M570 94 H600" stroke="#f0883e" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M710 94 H740" stroke="#3fb950" stroke-width="2" marker-end="url(#arr)"/>
+  <!-- callouts -->
+  <rect x="60" y="160" width="780" height="90" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="80" y="188" font-family="system-ui,sans-serif" font-size="13" fill="#3fb950"> No auto-promotion  drafts never go live without explicit approval</text>
+  <text x="80" y="212" font-family="system-ui,sans-serif" font-size="13" fill="#8b949e"> Conservative gates: recurrence + quality + low rework before drafting</text>
+  <text x="80" y="236" font-family="system-ui,sans-serif" font-size="13" fill="#8b949e"> Project vs shared lanes with different evidence thresholds</text>
+</svg>

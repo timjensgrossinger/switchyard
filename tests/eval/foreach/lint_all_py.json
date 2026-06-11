@@ -1,0 +1,6 @@
+{
+  "description": "lint every .py in src/",
+  "expected_tier": "low",
+  "expected_for_each": true,
+  "notes": "should produce a for_each node with source glob pattern"
+}

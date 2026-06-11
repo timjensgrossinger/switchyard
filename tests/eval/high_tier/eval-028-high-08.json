@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-high-08",
+  "category": "high_tier",
+  "tags": [
+    "boundary"
+  ],
+  "prompt": "Production incident: release is blocked today and login traffic is failing; design the safest rollback path before the next deploy.",
+  "expected": {
+    "tier": "high",
+    "score_min": 0.85,
+    "score_max": 0.95,
+    "urgency_expected": false,
+    "fanout_expected": "none"
+  }
+}

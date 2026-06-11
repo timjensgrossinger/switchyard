@@ -1,0 +1,39 @@
+{
+  "id": "fixtures-swarm-hierarchical",
+  "category": "high_tier",
+  "tags": ["stable", "swarm"],
+  "test_mode": "THRENODY_TEST_MODE",
+  "prompt": "Design a hierarchical swarm plan where an architect subtask scopes implementer and reviewer child subtasks for cross-service event delivery with rollback strategy.",
+  "expected": {
+    "tier": "high",
+    "score_min": 0.85,
+    "score_max": 0.95,
+    "urgency_expected": false,
+    "fanout_expected": "none"
+  },
+  "simulated_result": {
+    "topology": "hierarchical",
+    "budget_gate_triggered": false,
+    "fallback_topology": null,
+    "compatibility": {
+      "route_task_baseline_id": "eval-028-high-04",
+      "plan_task": {
+        "analysis": "hierarchical parent-child plan",
+        "subtasks": [{"id": "architect-1"}, {"id": "child-1"}],
+        "waves": [[1], [2]],
+        "strategy": "dag"
+      },
+      "fleet_plan": {
+        "plan": {"topology": "hierarchical"},
+        "fleet_waves": [{"wave_number": 1}, {"wave_number": 2}],
+        "execution_note": "authoritative parent artifacts"
+      },
+      "execute_subtask": {
+        "result": "ok",
+        "provider": "test-mode",
+        "model": "gpt-5-mini",
+        "tier": "low"
+      }
+    }
+  }
+}

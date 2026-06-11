@@ -1,0 +1,119 @@
+# Safe example configuration for Threnody.
+# Copy to ~/.local/lib/threnody/config.yaml after installation and customize.
+# Do not add API keys, bearer tokens, passwords, or machine-specific secrets.
+
+parallelism:
+  enabled: true
+  max_workers: 0
+  # Opt-in throughput tuning (safe defaults preserve prior behavior):
+  speculation_workers: 1   # concurrent higher-tier speculation lanes (cap 8)
+  warm_path_workers: 2     # parallel rework eval batch size (cap 8)
+
+swarm:
+  max_agents: 12
+  # host_native (default for MCP host shells): plan in Threnody, execute waves via host Agent/Task
+  # delegate: legacy subprocess orchestrator fanout (higher billing/policy surface)
+  host_execution_mode: host_native
+  # host_execution_mode_by_caller:
+  #   claude-code: host_native
+  #   github-copilot: host_native
+
+budgets:
+  default_hard_cap_tokens: 1000
+  default_soft_warning_pct: 0.8
+
+cache:
+  ttl_hours: 24
+  backup_keep: 3
+
+providers:
+  # Router-only host (claude-code) coordinates in the MCP host shell by default.
+  # It is excluded from execute_subtask delegation unless explicitly overridden:
+  #
+  # router_only_allow_execution:
+  #   - claude-code
+  #
+  # Override is lower risk when Claude Code uses API-key billing (pay-per-token).
+  # Subscription OAuth (Pro/Max) subprocess delegation carries provider-policy risk.
+  # Threnody cannot detect auth mode — verify before enabling. See docs/LEGAL.md.
+  #
+  # Meta-harness default: host shells execute via host_spawn (Agent/Task).
+  # Optional utility delegation — never to other host CLIs (Copilot, Codex, Cursor, …).
+  #
+  # delegation_utilities_enabled: false
+  # delegation_utilities:
+  #   - opencode
+  #   - aider
+  # Local loopback endpoints (ollama, configured local HTTPS) are allowed when enabled.
+  #
+  effort_defaults:
+    claude-code:
+      low: low
+      medium: medium
+      high: max
+    codex:
+      low: minimal
+      medium: medium
+      high: xhigh
+  timeouts:
+    low: 120
+    medium: 120
+    high: 120
+
+routing_policy:
+  # default | guarded | advisory | custom  (strict is deprecated → guarded)
+  mode: default
+  shells: {}
+
+# When true, low-tier delegate guards hard-block Edit/Write until execute_subtask runs.
+# Default false — guarded mode allows host-native edits after route_task.
+execute_subtask_guard_strict: false
+
+routing_exceptions:
+  # Built-in defaults already cover Markdown and known AI instruction files.
+  filetypes: []
+  paths: []
+
+verify_gate:
+  enabled: false
+  mode: warn
+  signals:
+    lint:
+      command: auto
+      required: false
+      timeout_seconds: 120
+    types:
+      command: auto
+      required: true
+      timeout_seconds: 120
+    tests:
+      command: auto
+      required: true
+      timeout_seconds: 300
+
+surgical_edits:
+  max_file_bytes: 32768
+  blocks_max_file_bytes: 131072
+  length_ratio_min: 0.5
+
+orchestrator:
+  # End-of-run synthesis merge strategy:
+  # off = single-pass only; auto = map-reduce when outputs exceed chunk size;
+  # always = map-reduce even for small result sets.
+  synthesis_map_reduce: auto
+  synthesis_chunk_chars: 12000
+
+resilience:
+  retry:
+    attempts: 3
+    base_delay_s: 0.5
+    max_delay_s: 8.0
+    jitter_ratio: 0.3
+  circuit_breaker:
+    failure_threshold: 3
+    open_seconds: 120
+    quota_open_seconds: 1800
+    auth_open_seconds: 600
+  auth_probe:
+    ttl_seconds: 600
+    enabled: true

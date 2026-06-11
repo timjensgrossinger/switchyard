@@ -1,0 +1,15 @@
+{
+  "id": "eval-028-low-01",
+  "category": "low_tier",
+  "tags": [
+    "stable"
+  ],
+  "prompt": "Rename foo.py to bar.py and show the diff.",
+  "expected": {
+    "tier": "low",
+    "score_min": 0.14,
+    "score_max": 0.16,
+    "urgency_expected": false,
+    "fanout_expected": "favor_parallel"
+  }
+}

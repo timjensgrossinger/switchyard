@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Deprecated wrapper — use `threnody-watch` instead."""
+
+import os
+import runpy
+import sys
+
+print("switchyard-watch is deprecated; use threnody-watch", file=sys.stderr)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+runpy.run_path(os.path.join(script_dir, "threnody-watch"), run_name="__main__")
