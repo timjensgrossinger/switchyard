@@ -1,6 +1,10 @@
 """Host-native spawn contract helpers for meta-harness v2."""
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger(__name__)
+
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -61,11 +65,52 @@ def host_native_method_for_tier(tier: str) -> str:
     return "direct_edit" if tier == "low" else "host_task"
 
 
+def _live_tier_model_for_caller(
+    caller: str | None,
+    tier: str,
+    registry: Any | None = None,
+) -> str | None:
+    normalized = normalize_caller_id(caller)
+    if not normalized or registry is None:
+        return None
+    provider_list = getattr(registry, "available_providers", None)
+    if not isinstance(provider_list, list):
+        return None
+    for provider in provider_list:
+        if getattr(provider, "name", None) != normalized:
+            continue
+        tier_models = getattr(provider, "tier_models", None)
+        if not isinstance(tier_models, dict):
+            return None
+        candidate = tier_models.get(tier)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        return None
+    return None
+
+
 def host_native_model_for_tier(
     config: TGsConfig,
     caller: str | None,
     tier: str,
+    registry: Any | None = None,
 ) -> str | None:
+    if registry is None:
+        try:
+            from .discovery import get_registry
+
+            registry = get_registry()
+        except Exception:
+            log.debug("host_native_model_for_tier: registry unavailable", exc_info=True)
+            registry = None
+
+    live_model = _live_tier_model_for_caller(caller, tier, registry)
+    if live_model:
+        return live_model
+
+    if config is None:
+        return None
+
     shell_id = normalize_routing_policy_shell_id(normalize_caller_id(caller))
     if shell_id is None:
         return None
@@ -117,6 +162,7 @@ def build_host_spawn_waves(
     *,
     config: TGsConfig,
     caller: str | None,
+    registry: Any | None = None,
 ) -> list[dict[str, Any]]:
     subtasks = plan_dict.get("subtasks")
     waves = plan_dict.get("waves")
@@ -141,8 +187,20 @@ def build_host_spawn_waves(
             prompt = str(subtask.get("description") or "").strip()
             if not prompt:
                 continue
-            raw_model = subtask.get("model")
-            model = str(raw_model).strip() if isinstance(raw_model, str) and str(raw_model).strip() else None
+            if _caller_is_host(caller):
+                model = host_native_model_for_tier(
+                    config,
+                    caller,
+                    tier,
+                    registry=registry,
+                )
+            else:
+                raw_model = subtask.get("model")
+                model = (
+                    str(raw_model).strip()
+                    if isinstance(raw_model, str) and str(raw_model).strip()
+                    else None
+                )
             agents.append(
                 build_host_spawn(
                     config=config,
@@ -291,6 +349,21 @@ def effective_swarm_host_execution_mode(config: TGsConfig, caller: str | None) -
         if isinstance(override, str) and override.strip().lower() in {"host_native", "delegate"}:
             return override.strip().lower()
     default_mode = getattr(config, "swarm_host_execution_mode", "host_native")
+    if isinstance(default_mode, str) and default_mode.strip().lower() == "delegate":
+        return "delegate"
+    if _caller_is_host(caller):
+        return "host_native"
+    return "delegate"
+
+
+def effective_planner_host_execution_mode(config: TGsConfig, caller: str | None) -> str:
+    normalized = normalize_caller_id(caller)
+    by_caller = getattr(config, "planner_host_execution_mode_by_caller", None) or {}
+    if normalized and isinstance(by_caller, dict):
+        override = by_caller.get(normalized)
+        if isinstance(override, str) and override.strip().lower() in {"host_native", "delegate"}:
+            return override.strip().lower()
+    default_mode = getattr(config, "planner_host_execution_mode", "host_native")
     if isinstance(default_mode, str) and default_mode.strip().lower() == "delegate":
         return "delegate"
     if _caller_is_host(caller):

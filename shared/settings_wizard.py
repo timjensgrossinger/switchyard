@@ -60,7 +60,7 @@ FALLBACK_PROVIDERS: list[dict] = [
         "name": "cursor",
         "available": True,
         "routeable": True,
-        "models": {"low": "claude-haiku", "medium": "claude-sonnet", "high": "claude-opus"},
+        "models": {"low": "composer-2.5-fast", "medium": "composer-2.5", "high": "claude-opus-4-8-thinking-high"},
         "billing": "subscription",
     },
     {
@@ -549,7 +549,7 @@ def _page_routing_policy_rich() -> dict:
         "Routing enforcement preference:",
         choices=[
             questionary.Choice(
-                "Recommended defaults (Claude guarded, Copilot/Gemini/Cursor/Codex advisory)",
+                "Recommended defaults (advisory for all shells)",
                 value="default",
             ),
             questionary.Choice("Guarded for all AI shells", value="guarded"),
@@ -583,7 +583,7 @@ def _page_routing_policy_rich() -> dict:
 def _page_routing_policy_plain() -> dict:
     print("\n=== Step 3.75/4 — Routing Enforcement ===")
     choices = [
-        ("default", "Recommended defaults (Claude guarded, Copilot/Gemini/Cursor/Codex advisory)"),
+        ("default", "Recommended defaults (advisory for all shells)"),
         ("guarded", "Guarded for all AI shells"),
         ("advisory", "Advisory for all AI shells"),
         ("custom", "Custom per shell"),

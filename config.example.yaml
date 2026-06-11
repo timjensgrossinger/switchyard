@@ -61,7 +61,7 @@ providers:
     high: 120
 
 routing_policy:
-  # default | guarded | advisory | custom  (strict is deprecated → guarded)
+  # default → advisory for all shells | guarded | advisory | custom  (strict is deprecated → guarded)
   mode: default
   shells: {}
 
@@ -97,6 +97,12 @@ surgical_edits:
   length_ratio_min: 0.5
 
 orchestrator:
+  # host_native (default for MCP host shells): heuristic plan in Threnody, no external planner CLI
+  # delegate: legacy LLM planner via Copilot/Codex subprocess
+  planner_host_execution_mode: host_native
+  # planner_host_execution_mode_by_caller:
+  #   claude-code: host_native
+  #   cursor: host_native
   # End-of-run synthesis merge strategy:
   # off = single-pass only; auto = map-reduce when outputs exceed chunk size;
   # always = map-reduce even for small result sets.

@@ -576,8 +576,6 @@ def _mode_shell_profile(shell_id: str, mode: str) -> ShellRoutingProfile:
 
 
 def _recommended_shell_profile(shell_id: str) -> ShellRoutingProfile:
-    if shell_id == "claude-code":
-        return _mode_shell_profile(shell_id, "guarded")
     return _mode_shell_profile(shell_id, "advisory")
 
 
@@ -1320,6 +1318,10 @@ class TGsConfig:
     # execute_swarm host execution: host_native (plan handoff) or delegate (subprocess).
     swarm_host_execution_mode: str = "host_native"
     swarm_host_execution_mode_by_caller: dict[str, str] = field(default_factory=dict)
+
+    # plan_task/decompose_task/fleet_plan host planning: host_native (heuristic) or delegate (LLM CLI).
+    planner_host_execution_mode: str = "host_native"
+    planner_host_execution_mode_by_caller: dict[str, str] = field(default_factory=dict)
 
     # Janitor-style verify gate (plan 04).
     verify_gate: VerifyGateConfig = field(default_factory=VerifyGateConfig)
@@ -2089,6 +2091,22 @@ class TGsConfig:
                 and str(mode).strip().lower() in {"host_native", "delegate"}
             }
 
+        raw_planner_host_mode = orchestrator_raw.get("planner_host_execution_mode", "host_native")
+        if isinstance(raw_planner_host_mode, str) and raw_planner_host_mode.strip().lower() in {
+            "host_native",
+            "delegate",
+        }:
+            cfg.planner_host_execution_mode = raw_planner_host_mode.strip().lower()
+        raw_planner_host_by_caller = orchestrator_raw.get("planner_host_execution_mode_by_caller", {})
+        if isinstance(raw_planner_host_by_caller, Mapping):
+            cfg.planner_host_execution_mode_by_caller = {
+                str(caller).strip().lower(): str(mode).strip().lower()
+                for caller, mode in raw_planner_host_by_caller.items()
+                if isinstance(caller, str)
+                and isinstance(mode, str)
+                and str(mode).strip().lower() in {"host_native", "delegate"}
+            }
+
         if isinstance(providers_section, dict):
             # Optional: per-provider usage-window thresholds
             raw_usage_windows = providers_section.get("usage_windows", {})
@@ -2371,6 +2389,10 @@ class TGsConfig:
                 "planner_timeout_seconds": self.planner_timeout,
                 "synthesis_map_reduce": self.synthesis_map_reduce,
                 "synthesis_chunk_chars": self.synthesis_chunk_chars,
+                "planner_host_execution_mode": self.planner_host_execution_mode,
+                "planner_host_execution_mode_by_caller": dict(
+                    sorted(self.planner_host_execution_mode_by_caller.items())
+                ),
             },
             "parallelism": {
                 "enabled": self.parallelism.enabled,

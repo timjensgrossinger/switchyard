@@ -1632,6 +1632,71 @@ def _tier_models_by_cost(models: list[str]) -> dict[str, list[str]]:
     return result
 
 
+CURSOR_STATIC_MODELS: dict[str, list[str]] = {
+    "low": ["composer-2.5-fast", "gpt-5.3-codex-low-fast", "gpt-5.2-codex-low-fast"],
+    "medium": ["composer-2.5", "claude-4.6-sonnet-medium", "gpt-5.3-codex"],
+    "high": ["claude-opus-4-8-thinking-high", "gpt-5.3-codex-high", "claude-4.6-opus-high-thinking"],
+}
+
+
+def _tier_cursor_models(models: list[str]) -> dict[str, list[str]]:
+    """Rank Cursor model IDs into tiers using Cursor-specific naming signals."""
+    if not models:
+        return CURSOR_STATIC_MODELS
+
+    low: list[str] = []
+    medium: list[str] = []
+    high: list[str] = []
+
+    for model in models:
+        model_id = model.strip()
+        if not model_id or model_id.lower() == "auto":
+            continue
+        lowered = model_id.lower()
+        if any(token in lowered for token in ("-xhigh", "-thinking-max", "-thinking-xhigh")):
+            high.append(model_id)
+        elif any(token in lowered for token in ("-high", "-max", "opus", "-thinking")):
+            high.append(model_id)
+        elif any(token in lowered for token in ("-low-fast", "-low", "codex-low", "composer-2.5-fast")):
+            low.append(model_id)
+        elif any(token in lowered for token in ("-medium", "sonnet", "composer-2.5", "codex")):
+            medium.append(model_id)
+        else:
+            medium.append(model_id)
+
+    result = {"low": low, "medium": medium, "high": high}
+    if not any(result.values()):
+        return CURSOR_STATIC_MODELS
+    return result
+
+
+def _parse_cursor_models(provider: "CLIProvider", output: str) -> dict[str, list[str]]:
+    """Parse ``cursor-agent models`` / ``--list-models`` output into tier buckets."""
+    if not output or not output.strip():
+        logger.warning("Cursor model discovery returned empty output; using static fallback")
+        return CURSOR_STATIC_MODELS
+
+    model_ids: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith("available models"):
+            continue
+        if " - " in stripped:
+            model_id = stripped.split(" - ", 1)[0].strip()
+        else:
+            model_id = stripped.split()[0].strip()
+        if model_id and model_id.lower() != "auto":
+            model_ids.append(model_id)
+
+    if not model_ids:
+        logger.warning("Cursor model discovery returned no model IDs; using static fallback")
+        return CURSOR_STATIC_MODELS
+
+    tiered = _tier_cursor_models(model_ids)
+    logger.debug("Cursor live model discovery succeeded: %d models across tiers", len(model_ids))
+    return tiered
+
+
 def _parse_aider_models(provider: "CLIProvider", output: str) -> dict[str, list[str]]:
     """
     Parse aider --list-models output into tier-ranked model lists.
@@ -2378,7 +2443,8 @@ BUILTIN_PROVIDERS: list[CLIProvider] = [
         command_builder=_build_cursor_command_safe,
         detect_hook=_detect_cursor_safe,
         output_cleaner=_clean_cursor_output_safe,
-        model_discovery_cmd=None,
+        model_discovery_cmd=["cursor-agent", "models"],
+        model_discovery_parser=_parse_cursor_models,
     ),
     CLIProvider(
         name="aider",

@@ -17,14 +17,14 @@ def _config_from_yaml(payload: str) -> TGsConfig:
         return TGsConfig.from_yaml(config_path)
 
 
-def test_claude_default_instructions_are_guarded() -> None:
+def test_claude_default_instructions_are_advisory() -> None:
     body = render_shell_instructions(TGsConfig.defaults(), "claude-code")
 
     assert "These instructions apply only to **Claude Code**" in body
     assert "meta-harness" in body
-    assert "Routing mode: guarded" in body
-    assert "`route_task` or `decompose_task`" in body
-    assert "follow `execution_hint`" in body
+    assert "Routing mode: advisory" in body
+    assert "not mandatory before edits in this shell" in body
+    assert "You may edit directly" in body
     assert "Routing exemptions" in body
     assert "`.md`" in body
     assert "`.mdc`" in body
@@ -32,13 +32,23 @@ def test_claude_default_instructions_are_guarded() -> None:
     assert "host_spawn_waves" in body
     assert "HostNativeRequired" in body
     assert "prefer direct edits or the host subagent tool" in body
-    assert "Agent transparency is required" in body
-    assert "PreToolUse" in body
-    assert "validate_routing_guard" in body
+    assert "Agent transparency tables are optional" in body
+    assert "PreToolUse" not in body
+    assert "validate_routing_guard" not in body
     assert "utility delegation only" in body
     assert "HostDelegationBlocked" in body
     assert "cross-backend delegation" not in body
-    assert "guarded routing" in body
+
+
+def test_claude_guarded_opt_in_emits_mandatory_instructions_with_hooks() -> None:
+    cfg = _config_from_yaml("routing_policy:\n  mode: guarded\n")
+    body = render_shell_instructions(cfg, "claude-code")
+
+    assert "Routing mode: guarded" in body
+    assert "`route_task` or `decompose_task`" in body
+    assert "Agent transparency is required" in body
+    assert "PreToolUse" in body
+    assert "validate_routing_guard" in body
 
 
 def test_copilot_default_instructions_are_advisory() -> None:

@@ -120,9 +120,9 @@ BOOTSTRAP_REGISTRY: dict[str, tuple[DiscoveredModel, ...]] = {
     ),
     "junie": (_model("configured-model", "medium"),),
     "cursor": (
-        _model("claude-haiku", "low"),
-        _model("claude-sonnet", "medium"),
-        _model("claude-opus", "high"),
+        _model("composer-2.5-fast", "low"),
+        _model("composer-2.5", "medium"),
+        _model("claude-opus-4-8-thinking-high", "high"),
     ),
     "amazon-q": (
         _model("claude-haiku", "low"),

@@ -37,11 +37,44 @@ def test_execute_swarm_input_schema_present() -> None:
     tool = next(tool for tool in mcp_server.TOOLS if tool["name"] == "execute_swarm")
 
     props = tool["inputSchema"]["properties"]
-    assert "task" in props
+    assert props["task"]["type"] == "string"
+    assert props["task_spec"]["type"] == "object"
     assert "max_agents" in props
     assert "workspace_root" in props
     assert "budget_limit" in props
     assert "preview_token" in props
+    assert tool["inputSchema"].get("required") == ["task"]
+
+
+def test_coerce_execute_swarm_task_input_prefers_task_spec() -> None:
+    payload = mcp_server._coerce_execute_swarm_task_input(
+        {"task": "plain text", "task_spec": {"id": "structured"}}
+    )
+    assert payload == {"id": "structured"}
+
+
+def test_coerce_execute_swarm_task_input_parses_json_string_task() -> None:
+    payload = mcp_server._coerce_execute_swarm_task_input(
+        {"task": '{"id":"json-task","priority":1}'}
+    )
+    assert payload == {"id": "json-task", "priority": 1}
+
+
+def test_normalize_mcp_tool_arguments_migrates_object_task_to_task_spec() -> None:
+    args = mcp_server._normalize_mcp_tool_arguments(
+        "execute_swarm",
+        {"task": {"id": "legacy-object-task"}, "max_agents": 2},
+    )
+    assert args["task_spec"] == {"id": "legacy-object-task"}
+    assert "task" not in args
+
+
+def test_normalize_mcp_tool_arguments_accepts_string_arguments() -> None:
+    args = mcp_server._normalize_mcp_tool_arguments(
+        "execute_swarm",
+        "refactor auth module",
+    )
+    assert args == {"task": "refactor auth module"}
 
 
 def test_execute_swarm_initial_response_shape(monkeypatch, tmp_path: Path) -> None:
@@ -49,7 +82,9 @@ def test_execute_swarm_initial_response_shape(monkeypatch, tmp_path: Path) -> No
     mcp_server._execute_swarm_rate_limit.clear()
     monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "test-initial")
 
-    result = mcp_server.handle_execute_swarm({"task": {"id": "t-1"}, "max_agents": 5})
+    result = mcp_server.handle_execute_swarm(
+        {"task": "structured swarm", "task_spec": {"id": "t-1"}, "max_agents": 5}
+    )
 
     assert result["started"] is True
     payload = result["result"]
@@ -74,7 +109,7 @@ def test_execute_swarm_ignores_caller_supplied_swarm_id(
     monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "test-spoof")
 
     result = mcp_server.handle_execute_swarm(
-        {"task": {"id": "t-override"}, "swarm_id": "attacker-choice"}
+        {"task_spec": {"id": "t-override"}, "swarm_id": "attacker-choice"}
     )
 
     assert result["result"]["swarm_id"] != "attacker-choice"
@@ -126,7 +161,7 @@ def test_budget_limit_must_be_finite(monkeypatch, tmp_path: Path) -> None:
     mcp_server._execute_swarm_rate_limit.clear()
 
     result = mcp_server.handle_execute_swarm(
-        {"task": {"id": "t-3"}, "budget_limit": float("nan")}
+        {"task_spec": {"id": "t-3"}, "budget_limit": float("nan")}
     )
 
     assert result == {
@@ -139,7 +174,7 @@ def test_execute_swarm_rejects_empty_task_text(monkeypatch, tmp_path: Path) -> N
     _stub_init(monkeypatch, tmp_path)
     mcp_server._execute_swarm_rate_limit.clear()
 
-    result = mcp_server.handle_execute_swarm({"task": {"task": "   "}})
+    result = mcp_server.handle_execute_swarm({"task_spec": {"task": "   "}})
 
     assert result == {
         "error": "invalid_request",
@@ -160,7 +195,7 @@ def test_request_fingerprint_rejects_unsupported_nested_values(
     mcp_server._execute_swarm_rate_limit.clear()
 
     result = mcp_server.handle_execute_swarm(
-        {"task": {"id": "t-unsupported", "bad": {1, 2}}}
+        {"task_spec": {"id": "t-unsupported", "bad": {1, 2}}}
     )
 
     assert result == {
@@ -208,7 +243,10 @@ def test_execute_swarm_host_native_skips_runtime_handoff(monkeypatch, tmp_path: 
         topology = "linear"
 
     class FakePlanner:
-        def plan(self, _task_text: str) -> FakePlan:
+        def plan(self, _task_text: str, **_kwargs) -> FakePlan:
+            return FakePlan()
+
+        def plan_heuristic(self, _task_text: str, **_kwargs) -> FakePlan:
             return FakePlan()
 
         def plan_to_dict(self, _plan: FakePlan) -> dict[str, object]:

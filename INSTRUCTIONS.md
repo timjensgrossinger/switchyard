@@ -33,7 +33,7 @@ routing_policy:
 
 | Shell | Default behavior |
 |---|---|
-| `claude-code` | Guarded coordination — mandatory `route_task`, host-native first after routing, transparency tables, and Claude edit/write hook |
+| `claude-code` | Advisory routing — `route_task` recommended but not mandatory; no PreToolUse hook unless you opt into guarded mode |
 | `github-copilot-cli` | Advisory routing; direct edits are allowed by default |
 | `cursor` | Advisory routing |
 | `codex` | Advisory routing |

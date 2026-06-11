@@ -49,6 +49,7 @@ from shared.version import get_version
 from shared.context import is_within_repo, normalize_target_path
 from shared.router import TaskRouter
 from shared.planner import (
+    ExecutionPlan,
     Planner,
     PlannerParseError,
     GhCopilotBackend,
@@ -115,13 +116,16 @@ from shared.discovery import (
 )
 from shared.config import normalize_caller_id, normalize_routing_policy_shell_id
 from shared.host_spawn import (
+    host_native_model_for_tier,
     COMPLIANCE_WARNING,
     build_host_native_required_response,
     build_host_spawn,
     build_host_spawn_waves,
+    effective_planner_host_execution_mode,
     effective_swarm_host_execution_mode,
     validate_execute_subtask_delegation,
     would_self_delegate,
+    _caller_is_host,
 )
 from shared.quota import ProviderQuotaService
 from shared.adapters import ProviderCapability
@@ -1250,11 +1254,22 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "task": {
-                    "description": "Task to execute as a string or structured object",
-                    "anyOf": [
-                        {"type": "string"},
-                        {"type": "object"},
-                    ],
+                    "type": "string",
+                    "description": (
+                        "Natural-language task description (required). Use a plain "
+                        "quoted string — same shape as plan_task/decompose_task."
+                    ),
+                },
+                "task_spec": {
+                    "type": "object",
+                    "description": (
+                        "Optional structured swarm payload (id, subtasks, complexity_score, …). "
+                        "When set, overrides task for planning/runtime handoff."
+                    ),
+                },
+                "task_text": {
+                    "type": "string",
+                    "description": "Alias for task when callers use task_text instead of task.",
                 },
                 "topology": {
                     "type": "string",
@@ -1783,6 +1798,43 @@ TOOLS = [
 # Tool handlers
 # ---------------------------------------------------------------------------
 
+def _planner_plan_for_caller(
+    config: TGsConfig,
+    planner: Planner,
+    router: TaskRouter | None,
+    caller: str | None,
+    task: str,
+    *,
+    topology: str | None = None,
+    max_agents: int | None = None,
+) -> tuple[ExecutionPlan, bool]:
+    use_heuristic = (
+        _caller_is_host(caller)
+        and effective_planner_host_execution_mode(config, caller) == "host_native"
+    )
+    if use_heuristic:
+        default_tier = "medium"
+        if router is not None:
+            try:
+                default_tier = router.route(task).tier
+            except Exception:
+                log.debug(
+                    "Failed to route task for heuristic default tier",
+                    exc_info=True,
+                )
+        return planner.plan_heuristic(
+            task,
+            default_tier=default_tier,
+            topology=topology,
+            max_agents=max_agents,
+        ), True
+    return planner.plan(
+        task,
+        topology=topology,
+        max_agents=max_agents,
+    ), False
+
+
 def handle_plan_task(args: dict) -> dict:
     global _config, _db, _router, _planner, _orchestrator
     # Respect injected planner/config/db during tests; this handler does not use router/orchestrator.
@@ -1815,7 +1867,13 @@ def handle_plan_task(args: dict) -> dict:
             pass
 
     try:
-        plan = planner.plan(task)
+        plan, used_heuristic = _planner_plan_for_caller(
+            config,
+            planner,
+            router,
+            caller,
+            task,
+        )
     except PlannerParseError as exc:
         return {
             "error": "PlannerParseError",
@@ -1824,6 +1882,8 @@ def handle_plan_task(args: dict) -> dict:
             "task": task,
         }
     result = _attach_models_to_subtasks(planner.plan_to_dict(plan))
+    if used_heuristic:
+        result["planner_host_execution_mode"] = "host_native"
 
     _sfi_subtasks = [st for st in result.get("subtasks", []) if isinstance(st, dict) and st.get("single_file_insertion")]
     _host_caller = normalize_caller_id(caller) in HOST_PROVIDER_NAMES
@@ -1946,7 +2006,13 @@ def handle_fleet_plan(args: dict) -> dict:
             pass
 
     try:
-        plan = planner.plan(task)
+        plan, used_heuristic = _planner_plan_for_caller(
+            config,
+            planner,
+            router,
+            caller,
+            task,
+        )
     except PlannerParseError as exc:
         return {
             "error": "PlannerParseError",
@@ -1955,6 +2021,8 @@ def handle_fleet_plan(args: dict) -> dict:
             "task": task,
         }
     plan_dict = _attach_models_to_subtasks(planner.plan_to_dict(plan))
+    if used_heuristic:
+        plan_dict["planner_host_execution_mode"] = "host_native"
     _attach_host_spawn_metadata(plan_dict, config=config, caller=caller, task=task)
 
     fleet_waves = _attach_plan_routing_to_fleet_waves(
@@ -1972,6 +2040,8 @@ def handle_fleet_plan(args: dict) -> dict:
         "execution_note": _fleet_note(len(fleet_waves)),
         "cache_hit": False,
     }
+    if used_heuristic:
+        result["planner_host_execution_mode"] = "host_native"
     guard = _issue_routing_guard(
         db,
         caller=caller,
@@ -2531,7 +2601,16 @@ def _attach_host_spawn_metadata(
     if normalize_caller_id(caller) not in HOST_PROVIDER_NAMES:
         return
     if isinstance(payload.get("subtasks"), list) and isinstance(payload.get("waves"), list):
-        waves = build_host_spawn_waves(payload, config=config, caller=caller)
+        try:
+            registry = _get_registry_with_config()
+        except Exception:
+            registry = None
+        waves = build_host_spawn_waves(
+            payload,
+            config=config,
+            caller=caller,
+            registry=registry,
+        )
         if waves:
             payload["host_spawn_waves"] = waves
         return
@@ -2599,14 +2678,32 @@ def _execute_swarm_host_native_response(
     config: TGsConfig,
     db: Database,
     planner: Planner,
+    router: TaskRouter | None,
     swarm_id: str,
     task_text: str,
     caller: str | None,
     request_meta: Mapping[str, object],
     estimated_cost: float,
 ) -> dict[str, object]:
+    topology = request_meta.get("topology")
+    topology_value = topology if isinstance(topology, str) else None
+    max_agents_raw = request_meta.get("effective_agents")
+    if max_agents_raw is None:
+        max_agents_raw = request_meta.get("requested_agents")
     try:
-        plan = planner.plan(task_text)
+        max_agents = int(max_agents_raw) if max_agents_raw is not None else None
+    except (TypeError, ValueError):
+        max_agents = None
+    try:
+        plan, used_heuristic = _planner_plan_for_caller(
+            config,
+            planner,
+            router,
+            caller,
+            task_text,
+            topology=topology_value,
+            max_agents=max_agents,
+        )
     except PlannerParseError as exc:
         return {
             "error": "PlannerParseError",
@@ -2615,6 +2712,8 @@ def _execute_swarm_host_native_response(
             "swarm_id": swarm_id,
         }
     plan_dict = _attach_models_to_subtasks(planner.plan_to_dict(plan))
+    if used_heuristic:
+        plan_dict["planner_host_execution_mode"] = "host_native"
     _attach_host_spawn_metadata(plan_dict, config=config, caller=caller)
     host_waves = plan_dict.get("host_spawn_waves")
     if not isinstance(host_waves, list):
@@ -2642,25 +2741,28 @@ def _execute_swarm_host_native_response(
         "host_native_handoff",
         {"wave_count": len(host_waves), "task_chars": len(task_text)},
     )
-    return {
-        "result": {
-            "swarm_id": swarm_id,
-            "host_execution_mode": "host_native",
-            "started": False,
-            "awaiting_host_execution": True,
-            "host_spawn_waves": host_waves,
-            "plan": plan_dict,
-            "cost_estimate": {
-                "estimated": float(estimated_cost),
-                "currency": "USD",
-                "unit": "credits",
-                "method": "fast_heuristic",
-            },
-            "execution_note": (
-                "Execute each host_spawn_waves entry via the host Agent/Task tool; "
-                "do not call execute_subtask for same-host work."
-            ),
+    swarm_result: dict[str, object] = {
+        "swarm_id": swarm_id,
+        "host_execution_mode": "host_native",
+        "started": False,
+        "awaiting_host_execution": True,
+        "host_spawn_waves": host_waves,
+        "plan": plan_dict,
+        "cost_estimate": {
+            "estimated": float(estimated_cost),
+            "currency": "USD",
+            "unit": "credits",
+            "method": "fast_heuristic",
         },
+        "execution_note": (
+            "Execute each host_spawn_waves entry via the host Agent/Task tool; "
+            "do not call execute_subtask for same-host work."
+        ),
+    }
+    if used_heuristic:
+        swarm_result["planner_host_execution_mode"] = "host_native"
+    return {
+        "result": swarm_result,
         "started": False,
     }
 
@@ -2669,11 +2771,12 @@ def _host_native_model_for_tier(
     caller: str | None,
     tier: str,
 ) -> str | None:
-    profile = _routing_profile_for_caller(config, caller)
-    if profile is None:
-        return None
-    model = profile.tier_model_mapping.get(tier)
-    return model if isinstance(model, str) and model.strip() else None
+    registry = None
+    try:
+        registry = _get_registry_with_config()
+    except Exception:
+        log.debug("_host_native_model_for_tier: registry unavailable", exc_info=True)
+    return host_native_model_for_tier(config, caller, tier, registry=registry)
 
 
 def _host_native_method_for_tier(tier: str) -> str:
@@ -4296,6 +4399,57 @@ def _swarm_runtime_constraints(
     return topology, max_agents
 
 
+def _coerce_execute_swarm_task_input(args: Mapping[str, object]) -> object | None:
+    """Resolve execute_swarm task from task, task_text, or task_spec."""
+    task_spec = args.get("task_spec")
+    if task_spec is not None:
+        return task_spec
+
+    raw_task = args.get("task")
+    if raw_task is None and isinstance(args.get("task_text"), str):
+        raw_task = args.get("task_text")
+    if raw_task is None:
+        return None
+
+    if isinstance(raw_task, str):
+        stripped = raw_task.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return raw_task
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        return raw_task
+
+    return raw_task
+
+
+def _normalize_mcp_tool_arguments(tool_name: str, tool_args: object) -> dict[str, object]:
+    """Coerce MCP tools/call arguments into a dict (transport/client tolerant)."""
+    if isinstance(tool_args, str):
+        try:
+            parsed = json.loads(tool_args)
+            tool_args = parsed if isinstance(parsed, dict) else {"task": tool_args}
+        except json.JSONDecodeError:
+            if tool_name == "execute_swarm":
+                tool_args = {"task": tool_args}
+            else:
+                tool_args = {}
+    elif not isinstance(tool_args, dict):
+        tool_args = {}
+
+    if tool_name != "execute_swarm":
+        return tool_args
+
+    coerced = dict(tool_args)
+    raw_task = coerced.get("task")
+    if isinstance(raw_task, dict) and coerced.get("task_spec") is None:
+        coerced["task_spec"] = raw_task
+        coerced.pop("task", None)
+    return coerced
+
+
 def _normalize_execute_swarm_task_text(raw_task: object) -> str:
     if isinstance(raw_task, Mapping):
         task_value = raw_task.get("task")
@@ -4703,9 +4857,12 @@ def confirm_preview_and_start(
 
 def handle_execute_swarm(args: dict) -> dict:
     """Implement the Phase 36 immediate execute_swarm contract (D-01..D-04)."""
-    raw_task = args.get("task")
+    raw_task = _coerce_execute_swarm_task_input(args)
     if raw_task is None:
-        return {"error": "invalid_request", "details": "task is required"}
+        return {
+            "error": "invalid_request",
+            "details": "task (string), task_text, or task_spec is required",
+        }
     normalized_task_text = _normalize_execute_swarm_task_text(raw_task).strip()
     if not normalized_task_text:
         return {"error": "invalid_request", "details": "task must not be empty"}
@@ -4948,11 +5105,12 @@ def handle_execute_swarm(args: dict) -> dict:
         
         swarm_mode = effective_swarm_host_execution_mode(config, caller_id)
         if swarm_mode == "host_native":
-            _, _, _, planner, _ = _ensure_init()
+            _, _, router, planner, _ = _ensure_init()
             return _execute_swarm_host_native_response(
                 config=config,
                 db=db,
                 planner=planner,
+                router=router,
                 swarm_id=swarm_id,
                 task_text=normalized_task_text,
                 caller=caller_id,
@@ -4972,11 +5130,12 @@ def handle_execute_swarm(args: dict) -> dict:
 
     swarm_mode = effective_swarm_host_execution_mode(config, caller_id)
     if swarm_mode == "host_native":
-        _, _, _, planner, _ = _ensure_init()
+        _, _, router, planner, _ = _ensure_init()
         return _execute_swarm_host_native_response(
             config=config,
             db=db,
             planner=planner,
+            router=router,
             swarm_id=swarm_id,
             task_text=normalized_task_text,
             caller=caller_id,
@@ -5689,6 +5848,7 @@ def _attach_models_to_subtasks(result: dict) -> dict:
         registry = None
 
     caller = _resolve_caller()
+    host_caller = normalize_caller_id(caller) in HOST_PROVIDER_NAMES
     provider_obj = CopilotProvider()
     selection_cache: dict[tuple[str, bool, str | None], dict[str, object] | None] = {}
     for st in subtasks:
@@ -5696,6 +5856,13 @@ def _attach_models_to_subtasks(result: dict) -> dict:
             continue
         tier = st.get("tier")
         if not isinstance(tier, str):
+            continue
+        if host_caller:
+            host_model = host_native_model_for_tier(_config, caller, tier, registry=registry)
+            if host_model:
+                st["model"] = host_model
+            st["provider_id"] = normalize_caller_id(caller)
+            st["provider"] = st.get("provider") or normalize_caller_id(caller)
             continue
         raw_model = _normalize_route_text(st.get("model"))
         explicit_model = raw_model
@@ -9664,7 +9831,10 @@ def handle_request(request: dict) -> None:
         send_response(req_id, {"tools": TOOLS})
     elif method == "tools/call":
         tool_name = params.get("name", "")
-        tool_args = params.get("arguments", {})
+        tool_args = _normalize_mcp_tool_arguments(
+            str(tool_name or ""),
+            params.get("arguments", {}),
+        )
         # Plumb _meta.progressToken so blocking tools can send heartbeats.
         raw_meta = params.get("_meta")
         meta = raw_meta if isinstance(raw_meta, Mapping) else {}

@@ -107,8 +107,8 @@ review after parallel waves.
 
 | Mode | Meaning |
 |------|---------|
-| **guarded** | Require `route_task` before non-exempt code edits; Claude Code installs PreToolUse hooks by default |
-| **advisory** | Recommend routing for non-trivial work; direct edits allowed without a guard |
+| **guarded** | Require `route_task` before non-exempt code edits; Claude Code can install PreToolUse hooks when opted in |
+| **advisory** | Default for all shells — recommend routing for non-trivial work; direct edits allowed without a guard |
 
 Guarded mode is a **coordination gate**, not a delegation mandate. After routing,
 follow `execution_hint` — host-native execution first; `execute_subtask` only when

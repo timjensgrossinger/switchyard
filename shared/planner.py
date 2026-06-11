@@ -37,6 +37,7 @@ from .plan_cache import (
     PLAN_CACHE_SCHEMA_INVALID,
     estimated_planner_tokens_from_plan,
 )
+from .heuristic_plan import build_heuristic_plan_payload
 from .style import StyleLearner, DecompositionPrefs
 
 log = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ class ExecutionPlan:
     planner_tokens: TokenEstimate = field(default_factory=TokenEstimate)
     estimated_agent_tokens: int = 0
     cache_hit: bool = False
+    planner_mode: str | None = None
     for_each_nodes: list["ForEachNode"] = field(default_factory=list)
     _topology_explicit: bool = False
     _max_rounds_explicit: bool = False
@@ -1234,6 +1236,88 @@ class Planner:
 
         return plan
 
+    def plan_heuristic(
+        self,
+        task: str,
+        skip_cache: bool = False,
+        *,
+        default_tier: str = "medium",
+        topology: str | None = None,
+        max_agents: int | None = None,
+    ) -> ExecutionPlan:
+        """Decompose a task using local heuristics (no external planner LLM)."""
+        constraints: list[str] = []
+        normalized_topology = str(topology or "").strip().lower()
+        if normalized_topology:
+            constraints.append(f"- Required topology: {normalized_topology}.")
+        if max_agents is not None:
+            constraints.append(
+                f"- Return no more than {max(1, int(max_agents))} total subtasks."
+            )
+        constraint_suffix = ""
+        if constraints:
+            constraint_suffix = "\n\nEXECUTION CONSTRAINTS:\n" + "\n".join(constraints)
+        cache_key = task + constraint_suffix
+
+        if not skip_cache and self._db:
+            lookup = self._db.plan_lookup(cache_key)
+            if lookup.status == "hit" and lookup.plan and "subtasks" in lookup.plan:
+                log.info("Plan cache hit — reusing cached heuristic decomposition")
+                plan = self._build_plan(lookup.plan, task)
+                plan.cache_hit = True
+                plan.planner_mode = "heuristic"
+                tokens_saved = estimated_planner_tokens_from_plan(lookup.plan)
+                self._log_planner_telemetry(
+                    task,
+                    planner_tokens=TokenEstimate(0, 0),
+                    estimated_tokens=tokens_saved,
+                    actual_tokens=0,
+                    timing_ms=0,
+                    success=True,
+                    reason=PLAN_CACHE_HIT,
+                )
+                return plan
+            cache_reasons = {
+                "miss": PLAN_CACHE_MISS,
+                "expired": PLAN_CACHE_EXPIRED,
+                "schema_invalid": PLAN_CACHE_SCHEMA_INVALID,
+            }
+            cache_reason = cache_reasons.get(lookup.status)
+            if cache_reason is not None:
+                self._log_planner_telemetry(
+                    task,
+                    planner_tokens=TokenEstimate(0, 0),
+                    estimated_tokens=0,
+                    actual_tokens=0,
+                    timing_ms=0,
+                    success=True,
+                    reason=cache_reason,
+                )
+
+        started_at = time.monotonic()
+        parsed = build_heuristic_plan_payload(
+            task,
+            default_tier=default_tier,
+            max_agents=max_agents,
+            topology=topology,
+        )
+        plan = self._build_plan(parsed, task)
+        plan.planner_mode = "heuristic"
+        plan.planner_tokens = TokenEstimate(0, 0)
+        plan.estimated_agent_tokens = self._estimate_agent_tokens(plan)
+        self._log_planner_telemetry(
+            task,
+            planner_tokens=TokenEstimate(0, 0),
+            estimated_tokens=0,
+            actual_tokens=0,
+            timing_ms=int((time.monotonic() - started_at) * 1000),
+            success=True,
+            reason="planner_heuristic",
+        )
+        if self._db:
+            self._db.plan_put(cache_key, self.plan_to_dict(plan), self._planner_model)
+        return plan
+
     def _build_plan(self, parsed: dict, original_task: str) -> ExecutionPlan:
         """Build an ExecutionPlan from parsed planner JSON."""
         subtasks: list[Subtask] = []
@@ -1626,6 +1710,7 @@ class Planner:
             "max_rounds": plan.max_rounds,
             "token_budget": plan.token_budget,
             "cache_hit": plan.cache_hit,
+            "planner_mode": plan.planner_mode,
             "token_estimate": {
                 "planner_input_tokens": pt.prompt_tokens,
                 "planner_output_tokens": pt.response_tokens,

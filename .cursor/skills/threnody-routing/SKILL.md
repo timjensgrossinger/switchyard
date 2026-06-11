@@ -42,7 +42,7 @@ providers:
 
 ## Routing guard (guarded mode)
 
-When `routing_policy` is `guarded` (default for Claude Code):
+When `routing_policy` is `guarded` (opt-in via `mode: guarded` or per-shell override):
 
 - Call `route_task` before non-exempt code edits.
 - Markdown and instruction files are exempt by default.

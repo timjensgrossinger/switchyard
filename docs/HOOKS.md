@@ -31,7 +31,7 @@ Re-run `./install.sh` to refresh the hook path after moving the install director
 
 ### Enable / disable
 
-- **Guarded (hook on):** `routing_policy.shells.claude-code.mode: guarded` in `config.yaml`, then `./install.sh`
+- **Guarded (hook on):** `routing_policy.mode: guarded` or `routing_policy.shells.claude-code.mode: guarded` in `config.yaml`, then `./install.sh`
 - **Advisory (hook off):** set mode to `advisory` and re-run `./install.sh` (removes the managed hook entry)
 
 (`mode: strict` is a deprecated alias for `guarded`.)

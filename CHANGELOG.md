@@ -7,6 +7,10 @@ Versioning for public releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **Routing policy defaults:** `routing_policy.mode: default` now recommends **advisory** routing for all shells (including Claude Code). Guarded coordination and Claude PreToolUse hooks remain available via `mode: guarded` or per-shell overrides. Re-run `./install.sh` to refresh managed instruction blocks and hook registration.
+
 ## [0.1.0-alpha.1] - 2026-06-11
 
 First public **Threnody** alpha after retiring the Switchyard-branded beta. Version

@@ -142,8 +142,8 @@ def test_effort_defaults_round_trip() -> None:
         assert cfg.to_legacy_dict()["providers"]["effort_defaults"]["claude-code"]["high"] == "max"
 
 
-def test_routing_policy_legacy_defaults_are_shell_specific() -> None:
-    """Missing routing_policy should preserve recommended shell defaults."""
+def test_routing_policy_legacy_defaults_are_advisory_for_all_shells() -> None:
+    """Missing routing_policy should preserve recommended advisory defaults."""
     with tempfile.TemporaryDirectory() as td:
         config_path = Path(td) / "config.yaml"
         config_path.write_text("providers: {}\n", encoding="utf-8")
@@ -152,10 +152,10 @@ def test_routing_policy_legacy_defaults_are_shell_specific() -> None:
         claude = cfg.routing_policy.effective_profile("claude-code")
         copilot = cfg.routing_policy.effective_profile("github-copilot-cli")
 
-        assert claude.route_task_mandatory is True
+        assert claude.route_task_mandatory is False
         assert claude.low_tier_execute_subtask is False
-        assert claude.agent_transparency_required is True
-        assert claude.direct_edit_hooks is True
+        assert claude.agent_transparency_required is False
+        assert claude.direct_edit_hooks is False
         assert claude.tier_model_mapping["low"] == "haiku"
         assert claude.tier_model_mapping["medium"] == "sonnet"
         assert claude.tier_model_mapping["high"] == "opus"

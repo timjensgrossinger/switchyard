@@ -183,7 +183,7 @@ The planner is advisory — it only returns decomposition metadata. The orchestr
 - **LLM output parsing**: reuse `_extract_json(raw)` from `shared/planner.py` — fenced JSON first, then brace-balancing fallback.
 - **Pattern utilities**: reuse `pattern_hash` / `normalize_pattern` from `shared/agents.py`.
 - **Config template vs installed**: `config.yaml` in the repo root is the template only. Runtime reads `~/.local/lib/threnody/config.yaml`. `install.sh` creates the installed copy only when absent — editing the template does not overwrite an existing install.
-- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction enforcement: `guarded` (default for Claude Code) requires `route_task` before code edits; `advisory` (default for GitHub Copilot CLI) renders guidance only. `strict` is a deprecated alias for `guarded`.
+- **Instruction surface alignment**: when routing UX, tool names, install behavior, or host-shell integration changes, update `README.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `install.sh`, `.github/copilot-instructions.md`, and `shared/instructions.py` together. `routing_policy` in `config.yaml` controls instruction enforcement: `advisory` is the default for all shells (routing recommended, not mandatory); `guarded` requires `route_task` before code edits and enables Claude PreToolUse hooks. `strict` is a deprecated alias for `guarded`.
 - **`execute_subtask` surgical edit modes**: use `mode=` to control how `target_file` is written:
   - `write` (default) — model output written verbatim. Safe for new files only.
   - `rewrite` — injects current file content, asks model for complete rewrite, guards against fragments with a length-ratio check (rejects if output < 50% of original). Max file: 32 KiB.
@@ -215,7 +215,7 @@ Routing eval fixtures live in `tests/eval/` organised by tier (`low_tier/`, `med
 
 `routing_exceptions` is an exemption list, not a code-file allowlist. Add only extra non-code surfaces there; do not enumerate code languages or config formats.
 
-`routing_policy` controls guarded vs advisory routing instructions per shell. Default: `guarded` for Claude Code, `advisory` for all others. To override:
+`routing_policy` controls guarded vs advisory routing instructions per shell. Default: `advisory` for all shells. To override:
 
 ```yaml
 routing_policy:
