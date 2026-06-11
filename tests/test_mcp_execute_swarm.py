@@ -233,6 +233,60 @@ def test_execute_swarm_init_failures_are_controlled(monkeypatch) -> None:
     }
 
 
+def test_execute_swarm_falls_back_to_routing_guard_task(monkeypatch, tmp_path: Path) -> None:
+    db = _stub_init(monkeypatch, tmp_path)
+    mcp_server._execute_swarm_rate_limit.clear()
+    monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "cursor")
+    monkeypatch.setattr(mcp_server, "_spawn_execute_swarm_runtime_handoff", lambda *a, **k: None)
+
+    workspace = str(tmp_path)
+    db.routing_guard_put(
+        caller="cursor",
+        cwd=mcp_server._routing_guard_cwd(workspace),
+        mode="direct",
+        task_text="Create greet.py in sandbox/demo-v4",
+    )
+
+    captured: list[str] = []
+
+    class FakePlan:
+        total_agents = 1
+        topology = "linear"
+
+    class FakePlanner:
+        def plan_heuristic(self, task_text: str, **_kwargs) -> FakePlan:
+            captured.append(task_text)
+            return FakePlan()
+
+        def plan_to_dict(self, _plan: FakePlan) -> dict[str, object]:
+            return {
+                "subtasks": [
+                    {
+                        "id": 1,
+                        "description": "Create greet.py",
+                        "tier": "low",
+                        "target_file": "greet.py",
+                    }
+                ],
+                "waves": [[1]],
+                "topology": "linear",
+            }
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_ensure_init",
+        lambda: (TGsConfig(db_path=tmp_path / "execute-swarm.db"), db, None, FakePlanner(), None),
+    )
+
+    result = mcp_server.handle_execute_swarm({"workspace_root": workspace, "max_agents": 1})
+
+    assert captured == ["Create greet.py in sandbox/demo-v4"]
+    assert result.get("started") is False
+    payload = result["result"]
+    assert payload["host_execution_mode"] == "host_native"
+    assert payload["awaiting_host_execution"] is True
+
+
 def test_execute_swarm_host_native_skips_runtime_handoff(monkeypatch, tmp_path: Path) -> None:
     db = _stub_init(monkeypatch, tmp_path)
     mcp_server._execute_swarm_rate_limit.clear()

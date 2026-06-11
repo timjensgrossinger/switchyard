@@ -38,3 +38,12 @@ def test_build_heuristic_plan_payload_main_py_depends_on_foundation_files() -> N
     assert by_file["main.py"]["depends_on"] == [1, 2]
     assert by_file["models.py"]["depends_on"] == []
     assert by_file["ops.py"]["depends_on"] == []
+
+
+def test_build_heuristic_plan_single_file_uses_low_tier() -> None:
+    payload = build_heuristic_plan_payload(
+        "Create greet.py in sandbox/demo-v4",
+        default_tier="medium",
+    )
+    assert len(payload["subtasks"]) == 1
+    assert payload["subtasks"][0]["tier"] == "low"

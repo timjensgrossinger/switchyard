@@ -4399,6 +4399,25 @@ def _swarm_runtime_constraints(
     return topology, max_agents
 
 
+def _task_from_routing_guard(
+    db: Database,
+    caller: str | None,
+    cwd: object | None,
+) -> str | None:
+    """Reuse the most recent route_task/plan task when execute_swarm omits task."""
+    normalized_caller = _normalize_route_text(caller) or "mcp"
+    guard = db.routing_guard_get(
+        caller=normalized_caller,
+        cwd=_routing_guard_cwd(cwd),
+    )
+    if not isinstance(guard, Mapping):
+        return None
+    task_text = guard.get("task_text")
+    if isinstance(task_text, str) and task_text.strip():
+        return task_text.strip()
+    return None
+
+
 def _coerce_execute_swarm_task_input(args: Mapping[str, object]) -> object | None:
     """Resolve execute_swarm task from task, task_text, or task_spec."""
     task_spec = args.get("task_spec")
@@ -4413,6 +4432,8 @@ def _coerce_execute_swarm_task_input(args: Mapping[str, object]) -> object | Non
 
     if isinstance(raw_task, str):
         stripped = raw_task.strip()
+        if not stripped:
+            return None
         if stripped.startswith("{") or stripped.startswith("["):
             try:
                 parsed = json.loads(stripped)
@@ -4858,6 +4879,19 @@ def confirm_preview_and_start(
 def handle_execute_swarm(args: dict) -> dict:
     """Implement the Phase 36 immediate execute_swarm contract (D-01..D-04)."""
     raw_task = _coerce_execute_swarm_task_input(args)
+    if raw_task is None:
+        try:
+            _config_probe, db, *_ = _ensure_init()
+            raw_task = _task_from_routing_guard(
+                db,
+                _resolve_caller(),
+                args.get("workspace_root") or args.get("cwd"),
+            )
+        except Exception:
+            log.debug(
+                "execute_swarm routing-guard task fallback unavailable",
+                exc_info=True,
+            )
     if raw_task is None:
         return {
             "error": "invalid_request",
@@ -9956,7 +9990,7 @@ def main() -> None:
                 cancelled,
             )
         for thread in dispatch_threads:
-            thread.join(timeout=2)
+            thread.join(timeout=120)
 
 
 if __name__ == "__main__":

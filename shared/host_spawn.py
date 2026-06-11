@@ -12,6 +12,23 @@ from .config import TGsConfig, normalize_caller_id, normalize_routing_policy_she
 from .discovery import HOST_PROVIDER_NAMES, ROUTER_ONLY_PROVIDERS
 
 HOST_SPAWN_ERROR = "HostNativeRequired"
+
+# Cursor Task/Agent subagent tool accepts only specific model slugs — not every
+# cursor-agent model id. Map registry/routing ids to spawnable slugs per tier.
+CURSOR_HOST_TASK_MODELS: dict[str, str] = {
+    "low": "composer-2.5-fast",
+    "medium": "composer-2.5-fast",
+    "high": "claude-opus-4-8-thinking-high",
+}
+CURSOR_HOST_TASK_MODEL_ALIASES: dict[str, str] = {
+    "composer-2.5": "composer-2.5-fast",
+    "claude-haiku": "composer-2.5-fast",
+    "claude-sonnet": "claude-4.6-sonnet-medium-thinking",
+    "claude-opus": "claude-opus-4-8-thinking-high",
+    "claude-sonnet-4.6": "claude-4.6-sonnet-medium-thinking",
+    "gpt-5-mini": "composer-2.5-fast",
+}
+
 COMPLIANCE_WARNING = (
     "router_only_allow_execution bypasses host-native execution and may violate "
     "provider OAuth policy — see docs/LEGAL.md"
@@ -77,7 +94,7 @@ def _live_tier_model_for_caller(
     if not isinstance(provider_list, list):
         return None
     for provider in provider_list:
-        if getattr(provider, "name", None) != normalized:
+        if not _provider_matches_caller(registry, provider, caller):
             continue
         tier_models = getattr(provider, "tier_models", None)
         if not isinstance(tier_models, dict):
@@ -87,6 +104,25 @@ def _live_tier_model_for_caller(
             return candidate.strip()
         return None
     return None
+
+
+def normalize_host_task_model(
+    caller: str | None,
+    model: str | None,
+    tier: str,
+) -> str | None:
+    """Return a model slug the host Task/Agent tool can actually spawn."""
+    normalized_caller = normalize_caller_id(caller)
+    resolved = model.strip() if isinstance(model, str) and model.strip() else None
+
+    if normalized_caller == "cursor":
+        if resolved and resolved in CURSOR_HOST_TASK_MODEL_ALIASES:
+            return CURSOR_HOST_TASK_MODEL_ALIASES[resolved]
+        if resolved and resolved in CURSOR_HOST_TASK_MODEL_ALIASES.values():
+            return resolved
+        return CURSOR_HOST_TASK_MODELS.get(tier) or CURSOR_HOST_TASK_MODELS.get("low")
+
+    return resolved
 
 
 def host_native_model_for_tier(
@@ -106,7 +142,7 @@ def host_native_model_for_tier(
 
     live_model = _live_tier_model_for_caller(caller, tier, registry)
     if live_model:
-        return live_model
+        return normalize_host_task_model(caller, live_model, tier)
 
     if config is None:
         return None
@@ -116,7 +152,9 @@ def host_native_model_for_tier(
         return None
     profile = config.routing_policy.effective_profile(shell_id)
     model = profile.tier_model_mapping.get(tier)
-    return model if isinstance(model, str) and model.strip() else None
+    if isinstance(model, str) and model.strip():
+        return normalize_host_task_model(caller, model.strip(), tier)
+    return None
 
 
 def subagent_type_for_tier(tier: str) -> str:

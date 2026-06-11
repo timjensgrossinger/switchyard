@@ -14,6 +14,7 @@ from shared.host_spawn import (
     build_host_spawn_waves,
     effective_swarm_host_execution_mode,
     host_tool_for_caller,
+    normalize_host_task_model,
     would_self_delegate,
 )
 
@@ -92,3 +93,12 @@ def test_effective_swarm_host_execution_mode_per_caller_override() -> None:
     cfg.swarm_host_execution_mode = "host_native"
     cfg.swarm_host_execution_mode_by_caller = {"claude-code": "delegate"}
     assert effective_swarm_host_execution_mode(cfg, "claude-code") == "delegate"
+
+
+def test_normalize_host_task_model_maps_cursor_registry_ids() -> None:
+    assert normalize_host_task_model("cursor", "composer-2.5", "medium") == "composer-2.5-fast"
+    assert normalize_host_task_model("cursor", "claude-sonnet", "medium") == (
+        "claude-4.6-sonnet-medium-thinking"
+    )
+    assert normalize_host_task_model("cursor", None, "low") == "composer-2.5-fast"
+    assert normalize_host_task_model("claude-code", "sonnet", "medium") == "sonnet"

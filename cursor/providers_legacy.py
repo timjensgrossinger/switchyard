@@ -12,8 +12,6 @@ The adapter provides metadata for cross-shell routing including:
 """
 from __future__ import annotations
 
-from typing import Any
-
 from shared.adapters import ProviderAdapter, ProviderCapability
 
 
@@ -27,9 +25,9 @@ def adapter_from_legacy() -> ProviderAdapter:
             "shell_names": ["cursor", "cursor-agent"],
             "provider": "cursor.providers",
             "tier_models": {
-                "low": "claude-haiku",
-                "medium": "claude-sonnet",
-                "high": "claude-opus",
+                "low": "composer-2.5-fast",
+                "medium": "composer-2.5-fast",
+                "high": "claude-opus-4-8-thinking-high",
             },
             "cost_rank": {
                 "low": 2,

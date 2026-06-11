@@ -117,8 +117,10 @@ def _description_hints_by_path(task: str, paths: list[str]) -> dict[str, str]:
 
 
 def _tier_for_subtask(*, file_count: int, default_tier: str) -> str:
+    if default_tier not in {"low", "medium", "high"}:
+        default_tier = "low"
     if file_count <= 1:
-        return default_tier if default_tier in {"low", "medium", "high"} else "medium"
+        return "high" if default_tier == "high" else "low"
     return "low"
 
 
