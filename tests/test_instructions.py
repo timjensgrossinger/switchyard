@@ -35,6 +35,9 @@ def test_claude_default_instructions_are_guarded() -> None:
     assert "Agent transparency is required" in body
     assert "PreToolUse" in body
     assert "validate_routing_guard" in body
+    assert "utility delegation only" in body
+    assert "HostDelegationBlocked" in body
+    assert "cross-backend delegation" not in body
     assert "guarded routing" in body
 
 

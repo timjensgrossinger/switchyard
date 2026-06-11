@@ -1133,12 +1133,109 @@ def test_handle_route_task_execution_hint_host_native_for_claude(monkeypatch) ->
         assert hint.get("host_native_method") == "host_task"
         assert "Task agent" in str(hint["recommended_action"])
         assert hint["delegation_targets"] == []
+        assert "github-copilot" not in str(hint.get("recommended_action", "")).lower()
+        assert "github-copilot" not in str(result.get("quick_action", "")).lower()
         economics = hint.get("economics")
         assert isinstance(economics, dict)
         assert economics.get("why_not_delegate")
         assert economics.get("cheapest_path_rationale")
+        assert "github-copilot" not in str(economics.get("cheapest_path_rationale", "")).lower()
         assert result.get("host_model") == "sonnet"
-        assert "execute_subtask" in result["quick_action"] or "Task agent" in result["quick_action"]
+        assert "Task agent" in result["quick_action"]
+
+
+class LeakyDelegationRegistry(DelegatingStubRegistry):
+    """Simulates a stale registry that still lists host CLIs for delegation."""
+
+    def _ordered_execution_candidates(
+        self,
+        tier,
+        *,
+        caller=None,
+        caller_allowlists=None,
+        prefer_free=True,
+        for_delegation=False,
+        provider_id=None,
+    ):
+        hosts = [
+            SimpleNamespace(name="github-copilot", display_name="GitHub Copilot"),
+            SimpleNamespace(name="codex", display_name="Codex"),
+            SimpleNamespace(name="opencode", display_name="OpenCode"),
+        ]
+        if for_delegation:
+            return hosts, []
+        return super()._ordered_execution_candidates(
+            tier,
+            caller=caller,
+            caller_allowlists=caller_allowlists,
+            prefer_free=prefer_free,
+            for_delegation=for_delegation,
+            provider_id=provider_id,
+        )
+
+
+def test_delegation_targets_filter_host_clis_when_utilities_disabled(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "route-filter.db"
+        cfg = TGsConfig(db_path=db_path, delegation_utilities_enabled=False)
+        db = Database(db_path=db_path)
+        router = SimpleNamespace(
+            classify=lambda _task: SimpleNamespace(
+                tier="low",
+                score=0.2,
+                reason="low-tier task",
+                agents=1,
+                override=False,
+            )
+        )
+        monkeypatch.setattr(
+            mcp_server,
+            "_ensure_init",
+            lambda: (cfg, db, router, None, None),
+        )
+        monkeypatch.setattr(mcp_server, "get_registry", lambda: LeakyDelegationRegistry())
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "cursor")
+
+        result = mcp_server.handle_route_task({"task": "fix typo"})
+
+        hint = result["execution_hint"]
+        assert hint["mode"] == "host_native"
+        assert hint["delegation_targets"] == []
+        assert "github-copilot" not in str(hint.get("recommended_action", "")).lower()
+        assert "codex" not in str(hint.get("recommended_action", "")).lower()
+
+
+def test_delegation_targets_allow_utilities_only_when_enabled(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "route-util.db"
+        cfg = TGsConfig(
+            db_path=db_path,
+            delegation_utilities_enabled=True,
+            delegation_utilities=["opencode"],
+        )
+        db = Database(db_path=db_path)
+        router = SimpleNamespace(
+            classify=lambda _task: SimpleNamespace(
+                tier="low",
+                score=0.2,
+                reason="low-tier task",
+                agents=1,
+                override=False,
+            )
+        )
+        monkeypatch.setattr(
+            mcp_server,
+            "_ensure_init",
+            lambda: (cfg, db, router, None, None),
+        )
+        monkeypatch.setattr(mcp_server, "get_registry", lambda: LeakyDelegationRegistry())
+        monkeypatch.setattr(mcp_server, "_resolve_caller", lambda: "external-caller")
+
+        result = mcp_server.handle_route_task({"task": "fix typo", "caller": "external-caller"})
+
+        hint = result["execution_hint"]
+        assert hint["delegation_targets"] == ["opencode"]
+        assert "github-copilot" not in hint["delegation_targets"]
 
 
 def test_handle_route_task_execution_hint_delegate_for_copilot(monkeypatch) -> None:

@@ -57,8 +57,9 @@ def render_shell_instructions(
             "Threnody is a local MCP coordination layer — **the host shell executes work** "
             "(Task tool, direct edits, host-configured backends).",
             "Use coordination tools first: `route_task`, `plan_task`, `execute_swarm`, `memory_*`, `learning_*`.",
-            "`execute_subtask` is **delegation to other backends** (Copilot, Codex, Cursor, endpoints, Aider, …) — "
-            "not for subprocess routing to Claude Code host shells unless explicitly configured.",
+            "`execute_subtask` is **utility delegation only** (opt-in OpenCode, Aider, local endpoints) — "
+            "not for host→host subprocess routing (Copilot, Codex, Cursor, Junie, Claude). "
+            "Same-host work uses `host_spawn` / Agent or Task.",
         ]
     )
     lines.append("")
@@ -70,7 +71,7 @@ def render_shell_instructions(
                 "",
                 "ALWAYS call `route_task` or `decompose_task` before writing or editing code or other non-exempt project files.",
                 "After routing, follow `execution_hint` — host-native execution first (Task tool, direct edits); "
-                "use `execute_subtask` only for cross-backend delegation when `execution_hint.mode` is `delegate`.",
+                "use `execute_subtask` only for utility targets in `delegation_targets` when `providers.delegation_utilities_enabled` is true.",
                 "If `route_task` returns a routing guard, follow that guard before using direct edit/write tools.",
             ]
         )
@@ -81,7 +82,7 @@ def render_shell_instructions(
                 "",
                 "`route_task` is recommended for non-trivial non-exempt changes, but it is not mandatory before edits in this shell.",
                 "You may edit directly when that is simpler or when shell/tooling support does not enforce routing guards.",
-                "When you do route, follow `execution_hint` — host-native first; delegate only when needed.",
+                "When you do route, follow `execution_hint` — host-native first; utility delegation only when enabled.",
             ]
         )
 
@@ -101,7 +102,7 @@ def render_shell_instructions(
     lines.append("")
     lines.append(
         "For low-tier work, prefer direct edits or the host subagent tool from `host_spawn`; "
-        "use `execute_subtask` only for cross-backend delegation."
+        "do not use `execute_subtask` to route between host CLIs."
     )
 
     host_tool = "Agent" if profile.shell_id == "claude-code" else "Task"
@@ -114,6 +115,7 @@ def render_shell_instructions(
             f"Spawn each wave with the host `{host_tool}` tool (or direct edits when `host_native_method` is `direct_edit`).",
             "Do **not** call `execute_subtask` for same-host work — Threnody returns `HostNativeRequired` with an actionable `host_spawn` payload.",
             "Use `execute_subtask(provider_id=...)` only for utility backends in `delegation_targets` when `providers.delegation_utilities_enabled` is true.",
+            "Host→host `execute_subtask` (Copilot, Codex, Cursor, Junie, Claude) returns `HostDelegationBlocked`.",
             "`execute_swarm` defaults to `host_native`: execute `host_spawn_waves` in the host shell; Threnody persists the plan as `awaiting_host_execution` without subprocess fanout.",
         ]
     )

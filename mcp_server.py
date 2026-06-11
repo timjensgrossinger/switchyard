@@ -3135,13 +3135,48 @@ def _validate_routing_guard(
     }
 
 
+def _utility_delegation_allowlist(config: TGsConfig | None) -> set[str]:
+    if config is None:
+        return set()
+    return {
+        str(item).strip().lower()
+        for item in getattr(config, "delegation_utilities", []) or []
+        if isinstance(item, str) and item.strip()
+    }
+
+
+def _filter_utility_delegation_targets(
+    targets: list[str],
+    *,
+    config: TGsConfig | None,
+) -> list[str]:
+    """Keep only opt-in utility targets; never surface host CLIs in route hints."""
+    if config is not None and not getattr(config, "delegation_utilities_enabled", False):
+        return []
+    allowlist = _utility_delegation_allowlist(config)
+    filtered: list[str] = []
+    for name in targets:
+        normalized = str(name or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized.startswith("local-"):
+            filtered.append(name)
+            continue
+        if allowlist and normalized in allowlist:
+            filtered.append(name)
+    return filtered
+
+
 def _delegation_targets_for_tier(
     registry: Any,
     tier: str,
     *,
     caller: str | None,
     caller_allowlists: dict[str, list[str]] | None,
+    config: TGsConfig | None = None,
 ) -> list[str]:
+    if config is not None and not getattr(config, "delegation_utilities_enabled", False):
+        return []
     if not hasattr(registry, "_ordered_execution_candidates"):
         return []
     try:
@@ -3154,7 +3189,12 @@ def _delegation_targets_for_tier(
     except Exception:
         log.debug("_delegation_targets_for_tier failed", exc_info=True)
         return []
-    return [str(getattr(provider, "name", "")) for provider in ordered if getattr(provider, "name", "")]
+    raw_targets = [
+        str(getattr(provider, "name", ""))
+        for provider in ordered
+        if getattr(provider, "name", "")
+    ]
+    return _filter_utility_delegation_targets(raw_targets, config=config)
 
 
 def _estimate_route_cost_usd(model: str | None, tier: str) -> float | None:
@@ -3278,6 +3318,7 @@ def _build_route_execution_hint(
         tier,
         caller=caller,
         caller_allowlists=caller_allowlists,
+        config=config,
     )
     host_native = bool(normalized_caller and normalized_caller in HOST_PROVIDER_NAMES)
     host_native_model = (
@@ -7862,6 +7903,7 @@ def handle_execute_subtask(args: dict) -> dict:
             tier,
             caller=routing_caller,
             caller_allowlists=caller_allowlists,
+            config=_config,
         )
         return build_host_native_required_response(
             config=_config,
