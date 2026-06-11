@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/hero.svg" alt="Threnody — local-first MCP meta-harness for AI coding CLIs" width="100%">
-</p>
-
 <h1 align="center">Threnody</h1>
 <h3 align="center">Local-first MCP meta-harness — host executes, Threnody coordinates swarms, memory, and learning</h3>
 
