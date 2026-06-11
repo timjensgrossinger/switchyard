@@ -232,14 +232,14 @@ Threnody MCP workflows (CLI-agnostic — use from any connected host):
 
 | Skill | When |
 |-------|------|
-| [threnody-plan](../.cursor/skills/threnody-plan/SKILL.md) | Plan-only or plan-then-execute; decompose vs swarm choice |
-| [threnody-routing](../.cursor/skills/threnody-routing/SKILL.md) | `route_task`, routing guard, host-native vs utility delegation |
-| [threnody-task](../.cursor/skills/threnody-task/SKILL.md) | `plan_task`, `decompose_task`, `fleet_plan`, `host_spawn_waves` |
-| [threnody-swarm](../.cursor/skills/threnody-swarm/SKILL.md) | `execute_swarm`, topology, budget preview, resume |
-| [threnody-fullstack](../.cursor/skills/threnody-fullstack/SKILL.md) | Parallel frontend + backend + API (contract-first DAG) |
-| [threnody-subtasks](../.cursor/skills/threnody-subtasks/SKILL.md) | `list_subtasks` for utility `execute_subtask` monitoring |
+| [threnody-plan](skills/threnody-plan/SKILL.md) | Plan-only or plan-then-execute; decompose vs swarm choice |
+| [threnody-routing](skills/threnody-routing/SKILL.md) | `route_task`, routing guard, host-native vs utility delegation |
+| [threnody-task](skills/threnody-task/SKILL.md) | `plan_task`, `decompose_task`, `fleet_plan`, `host_spawn_waves` |
+| [threnody-swarm](skills/threnody-swarm/SKILL.md) | `execute_swarm`, topology, budget preview, resume |
+| [threnody-fullstack](skills/threnody-fullstack/SKILL.md) | Parallel frontend + backend + API (contract-first DAG) |
+| [threnody-subtasks](skills/threnody-subtasks/SKILL.md) | `list_subtasks` for utility `execute_subtask` monitoring |
 
-Also indexed under `.cursor/skills/` in the repo root.
+Canonical location: `skills/` in the repo root (symlinked for Cursor and Claude Code project discovery).
 <!-- GSD:skills-end -->
 
 <!-- GSD:workflow-start source:GSD defaults -->

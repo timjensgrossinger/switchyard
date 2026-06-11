@@ -28,7 +28,7 @@ Plan, classify, and orchestrate work. Prefer host-native execution using
 
 `fleet_plan(task)` returns the same plan plus ready-made fleet command strings per wave.
 
-See project skill `.cursor/skills/threnody-task/SKILL.md`.
+See project skill `skills/threnody-task/SKILL.md`.
 
 ### `execute_swarm`
 
@@ -47,7 +47,7 @@ subprocess with coordinator rounds on star topology. Resume via
 `resume_swarm_inspect` / `resume_swarm_confirm`.
 
 Full-stack parallel frontend/backend/API: use contract-first DAG waves — see
-`.cursor/skills/threnody-fullstack/SKILL.md` and [ARCHITECTURE.md](ARCHITECTURE.md).
+`skills/threnody-fullstack/SKILL.md` and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Delegation
 

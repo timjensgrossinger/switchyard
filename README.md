@@ -74,20 +74,18 @@ Threnody documents operator responsibilities; it does not provide legal certific
 
 ---
 
-## Project skills (`.cursor/skills/`)
+## Project skills
 
-Six repo-local skills guide MCP workflows from any connected host (Cursor, Copilot, Claude Code, etc.):
+Six repo-local skills under [`skills/`](skills/) guide MCP workflows from any connected host (Cursor, Copilot, Claude Code, Codex, etc.). Host shells discover them via repo symlinks (`.cursor/skills`, `.claude/skills`) and the skill index in [copilot-instructions.md](copilot-instructions.md).
 
 | Skill | Use when |
 |---|---|
-| [threnody-plan](.cursor/skills/threnody-plan/SKILL.md) | Plan-only or plan-then-execute; choose waves vs swarm |
-| [threnody-routing](.cursor/skills/threnody-routing/SKILL.md) | `route_task`, routing guard, host-native vs utility delegation |
-| [threnody-task](.cursor/skills/threnody-task/SKILL.md) | `plan_task`, `decompose_task`, `fleet_plan`, `host_spawn_waves` |
-| [threnody-swarm](.cursor/skills/threnody-swarm/SKILL.md) | `execute_swarm`, topology, budget preview, resume |
-| [threnody-fullstack](.cursor/skills/threnody-fullstack/SKILL.md) | Contract-first parallel frontend + backend + API |
-| [threnody-subtasks](.cursor/skills/threnody-subtasks/SKILL.md) | Monitor opt-in utility `execute_subtask` runs |
-
-Also indexed in [copilot-instructions.md](copilot-instructions.md) for installer-managed instruction sync.
+| [threnody-plan](skills/threnody-plan/SKILL.md) | Plan-only or plan-then-execute; choose waves vs swarm |
+| [threnody-routing](skills/threnody-routing/SKILL.md) | `route_task`, routing guard, host-native vs utility delegation |
+| [threnody-task](skills/threnody-task/SKILL.md) | `plan_task`, `decompose_task`, `fleet_plan`, `host_spawn_waves` |
+| [threnody-swarm](skills/threnody-swarm/SKILL.md) | `execute_swarm`, topology, budget preview, resume |
+| [threnody-fullstack](skills/threnody-fullstack/SKILL.md) | Contract-first parallel frontend + backend + API |
+| [threnody-subtasks](skills/threnody-subtasks/SKILL.md) | Monitor opt-in utility `execute_subtask` runs |
 
 ---
 
@@ -209,7 +207,7 @@ Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
 | 💾 | **Cross-session memory** | `memory_*` MCP tools backed by local SQLite |
 | 🔌 | **MCP-native** | ~43 tools over stdio JSON-RPC; works with any MCP-compatible host shell |
 | 🔀 | **Utility delegation** | Opt-in `execute_subtask` to OpenCode, Aider, local endpoints; host→host blocked |
-| 📋 | **Planning skills** | Six repo skills under `.cursor/skills/` — start with `threnody-plan` for plan-only workflows |
+| 📋 | **Planning skills** | Six repo skills under `skills/` — start with `threnody-plan` for plan-only workflows |
 | 📈 | **Adaptive thresholds** | EMA-based threshold learning from routing outcomes |
 | 🛡️ | **Write safety** | Path validation, outside-workspace preview gate, audit trail |
 | 🔒 | **Guarded routing** | Optional coordination gate + Claude PreToolUse hooks (`routing_policy.mode: guarded`; advisory is default) |

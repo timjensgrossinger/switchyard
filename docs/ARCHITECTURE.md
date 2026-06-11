@@ -68,7 +68,7 @@ Default for MCP hosts: `swarm.host_execution_mode: host_native` — Threnody pla
 the host shell spawns agents. Set `host_execution_mode: delegate` only for
 legacy subprocess orchestrator fanout.
 
-Project skills in `.cursor/skills/` document workflows: `threnody-plan`,
+Project skills in `skills/` document workflows: `threnody-plan`,
 `threnody-task`, `threnody-swarm`, `threnody-fullstack`, `threnody-routing`,
 `threnody-subtasks`.
 

@@ -69,5 +69,5 @@ For live monitoring, run `threnody-watch` in another terminal tab.
 
 ## Canonical location
 
-Project skill: `.cursor/skills/threnody-subtasks/` in the Threnody repo.
+Project skill: `skills/threnody-subtasks/` in the Threnody repo.
 Supersedes the personal `router-tasks` skill (TGs-router naming).
