@@ -20,7 +20,7 @@
 <p align="center">
   <strong>Plan in Threnody.</strong> Route, decompose, and swarm via MCP.<br>
   <strong>Execute in the host.</strong> Agent/Task subagents from <code>host_spawn</code> / <code>host_spawn_waves</code>.<br>
-  <strong>Delegate cross-backend only.</strong> <code>execute_subtask(provider_id=…)</code> when another CLI should run the work.
+  <strong>Utility delegation (opt-in).</strong> <code>execute_subtask</code> to OpenCode, Aider, or local endpoints — never host→host.
 </p>
 
 ---
@@ -59,6 +59,42 @@ Search terms that describe the same project: **MCP orchestrator**, **meta-harnes
 
 ---
 
+## Claude Code and provider compliance (default posture)
+
+With **default configuration**, Threnody matches Anthropic's intended MCP pattern for Claude Code:
+
+| Control | Default behavior |
+|---|---|
+| **Execution** | Host runs work via **Agent** and direct edits — Threnody returns `host_spawn` / `host_spawn_waves`, not subprocess `claude -p` loops |
+| **Router-only** | Claude Code is a coordination anchor; Threnody does not delegate to it as a subprocess backend |
+| **Same-host `execute_subtask`** | Returns **`HostNativeRequired`** with an actionable spawn payload |
+| **Host→host delegation** | **`HostDelegationBlocked`** — no subprocess to Copilot, Codex, Cursor, Junie, or Claude from MCP |
+| **Utility delegation** | Off by default; opt-in targets OpenCode, Aider, and local loopback endpoints only |
+| **Guarded routing** | Claude Code uses `routing_policy: guarded` — `route_task` before edits plus PreToolUse hook ([docs/HOOKS.md](docs/HOOKS.md)) |
+
+**Operator opt-in risk:** Enabling `providers.router_only_allow_execution` for Claude Code can subprocess the CLI. With **subscription OAuth**, that pattern is documented as **high policy risk** in [docs/LEGAL.md](docs/LEGAL.md). API-key billing is lower operational risk but still bills outside Threnody's telemetry.
+
+Threnody documents operator responsibilities; it does not provide legal certification. Verify your auth mode and provider terms before changing defaults.
+
+---
+
+## Project skills (`.cursor/skills/`)
+
+Six repo-local skills guide MCP workflows from any connected host (Cursor, Copilot, Claude Code, etc.):
+
+| Skill | Use when |
+|---|---|
+| [threnody-plan](.cursor/skills/threnody-plan/SKILL.md) | Plan-only or plan-then-execute; choose waves vs swarm |
+| [threnody-routing](.cursor/skills/threnody-routing/SKILL.md) | `route_task`, routing guard, host-native vs utility delegation |
+| [threnody-task](.cursor/skills/threnody-task/SKILL.md) | `plan_task`, `decompose_task`, `fleet_plan`, `host_spawn_waves` |
+| [threnody-swarm](.cursor/skills/threnody-swarm/SKILL.md) | `execute_swarm`, topology, budget preview, resume |
+| [threnody-fullstack](.cursor/skills/threnody-fullstack/SKILL.md) | Contract-first parallel frontend + backend + API |
+| [threnody-subtasks](.cursor/skills/threnody-subtasks/SKILL.md) | Monitor opt-in utility `execute_subtask` runs |
+
+Also indexed in [copilot-instructions.md](copilot-instructions.md) for installer-managed instruction sync.
+
+---
+
 ## Why Threnody?
 
 | | |
@@ -67,7 +103,8 @@ Search terms that describe the same project: **MCP orchestrator**, **meta-harnes
 | **Learn over time** | Pattern tracking, draft agents, and an approval queue before anything goes live. |
 | **Swarm when needed** | `execute_swarm` defaults to `host_native`: wave plans hand off to the host; no subprocess fanout by default. |
 | **Utility delegation (opt-in)** | `execute_subtask(provider_id=…)` to OpenCode, Aider, or local endpoints only; host→host delegation is blocked. |
-| **Spend discipline** | Host-native execution uses existing CLI entitlements; local telemetry via `inspect_spend` and `threnody gain`. |
+| **Planning mode** | `threnody-plan` skill — plan-only vs plan-then-execute; routes to waves or swarms without extra coordinator rounds. |
+| **Spend discipline** | Host-native execution uses existing CLI entitlements; contract-first alignment instead of multi-queen consensus. |
 
 ---
 
@@ -114,7 +151,7 @@ threnody inspect approvals approve 12 --project . --operator you
 Host shell (Claude / Copilot / Codex / Cursor / …)
   → route_task / plan_task   tier + host_spawn / host_spawn_waves
   → host executes            Agent or Task subagents, direct edits
-  → cross-backend only       execute_subtask(provider_id=…) → other CLIs
+  → utility delegation       execute_subtask → OpenCode / Aider / local (opt-in)
   → swarm / learning         execute_swarm (host_native default), memory_*, learning_*
 ```
 
@@ -122,7 +159,7 @@ Host shell (Claude / Copilot / Codex / Cursor / …)
 2. **Threnody scores complexity** → low / medium / high tier (no extra LLM call on the hot path).
 3. **`route_task` or `plan_task` returns spawn metadata** — `host_spawn` for single-agent work, `host_spawn_waves` for multi-step plans.
 4. **The host runs the work** — Claude Code uses **Agent**; other shells use **Task**. Same-host `execute_subtask` returns `HostNativeRequired`.
-5. **Cross-backend or swarms** — explicit `provider_id` for another CLI; `execute_swarm` returns a host-native wave plan by default.
+5. **Swarms or utility delegation** — `execute_swarm` returns a host-native wave plan by default; optional `execute_subtask` only for utility backends when enabled in config.
 
 ### What leaves your machine
 
@@ -151,15 +188,16 @@ Threnody is built for operators who want **token discipline** across Copilot, Cl
 
 ```text
 route_task / plan_task  →  host_spawn / host_spawn_waves  →  host Agent/Task
-execute_subtask         →  cross-backend only (explicit provider_id)
+execute_subtask         →  utility targets only (opt-in; host→host blocked)
 execute_swarm           →  host_native default; delegate opt-in
 ```
 
 1. **`route_task` / `plan_task`** classify work and return `host_spawn` metadata plus `execution_hint.economics`.
 2. **Host-native first** — Agent/Task subagents and direct edits use your existing CLI entitlements; no Threnody subprocess loop for same-host work.
-3. **Cross-backend only** — `execute_subtask(provider_id=…)` when another CLI should run the work.
-4. **Measure locally** — `inspect_spend`, `threnody inspect spend`, and `threnody gain` aggregate delegated-subtask savings from `cost_telemetry`.
-5. **Guarded coordination (Claude Code default)** — `route_task` before code edits; PreToolUse hook blocks unclassified premium edits. See [docs/HOOKS.md](docs/HOOKS.md). Set `routing_policy.mode: advisory` to disable.
+3. **Utility delegation (opt-in)** — `execute_subtask(provider_id=…)` to OpenCode, Aider, or local loopback endpoints when `delegation_utilities_enabled: true`.
+4. **Contract-first alignment** — parallel waves + verify gates instead of multi-queen coordinator consensus (see [docs/COMPETITIVE.md](docs/COMPETITIVE.md)).
+5. **Measure locally** — `inspect_spend`, `threnody inspect spend`, and `threnody gain` aggregate delegated-subtask savings from `cost_telemetry`.
+6. **Guarded coordination (Claude Code default)** — `route_task` before code edits; PreToolUse hook blocks unclassified premium edits. See [docs/HOOKS.md](docs/HOOKS.md). Set `routing_policy.mode: advisory` to disable.
 
 Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
 
@@ -174,7 +212,8 @@ Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
 | 🐝 | **Swarm orchestration** | `execute_swarm` returns `host_spawn_waves` by default (`awaiting_host_execution`) |
 | 💾 | **Cross-session memory** | `memory_*` MCP tools backed by local SQLite |
 | 🔌 | **MCP-native** | ~43 tools over stdio JSON-RPC; works with any MCP-compatible host shell |
-| 🔀 | **Cross-backend delegation** | `execute_subtask(provider_id=…)` to Copilot, Codex, Cursor, endpoints, Aider, … |
+| 🔀 | **Utility delegation** | Opt-in `execute_subtask` to OpenCode, Aider, local endpoints; host→host blocked |
+| 📋 | **Planning skills** | Six repo skills under `.cursor/skills/` — start with `threnody-plan` for plan-only workflows |
 | 📈 | **Adaptive thresholds** | EMA-based threshold learning from routing outcomes |
 | 🛡️ | **Write safety** | Path validation, outside-workspace preview gate, audit trail |
 | 🔒 | **Guarded routing** | Optional coordination gate + Claude PreToolUse hooks (`routing_policy.mode: guarded`) |
@@ -185,16 +224,16 @@ Workflow guide: [docs/COST_SAVINGS.md](docs/COST_SAVINGS.md)
 
 | Provider | Binary | Role | Notes |
 |---|---|---|---|
-| **Claude Code** | `claude` | Host (router-only) | MCP coordination anchor; executes via **Agent** / direct edits |
+| **Claude Code** | `claude` | Host (router-only) | MCP coordination anchor; executes via **Agent** / direct edits — no default subprocess delegation |
 | **GitHub Copilot** | `gh` | Host | Host executes via **Task**; coordinates in MCP |
 | **OpenAI Codex** | `codex` | Host | Host-native execution via Task tool |
 | **Cursor** | `cursor-agent` | Host | Host-native execution via Task tool |
 | **OpenCode** | `opencode` | Host + utility | Host-native when MCP host; utility delegation target when enabled |
-| **JetBrains Junie** | `junie` | Delegation | Medium-tier auto-route by default |
-| **Aider** | `aider` | Delegation | Secondary adapter |
-| **Amazon Q / Kiro** | `q` / `kiro` | Delegation | Secondary adapter |
-| **Mistral Vibe** | `vibe` | Delegation | Secondary adapter |
-| **Blackbox AI** | `blackbox` | Delegation | When CLI installed |
+| **JetBrains Junie** | `junie` | Host / legacy paths | Host-native when MCP host; not a default `execute_subtask` target from other hosts |
+| **Aider** | `aider` | Utility | Secondary adapter; opt-in utility delegation |
+| **Amazon Q / Kiro** | `q` / `kiro` | Legacy / detect | Secondary adapter; not default host→host delegation |
+| **Mistral Vibe** | `vibe` | Legacy / detect | Secondary adapter |
+| **Blackbox AI** | `blackbox` | Legacy / detect | When CLI installed |
 | **Windsurf** | `windsurf` | detect only | Never selected for execution |
 
 Run `threnody inspect status --project . --details` for your live provider matrix.
@@ -265,7 +304,8 @@ Full reference: [docs/CLI.md](docs/CLI.md)
 | [Host routing hooks](docs/HOOKS.md) | Claude PreToolUse guard script |
 | [Release Limitations](docs/RELEASE_LIMITATIONS.md) | Beta scope, privacy, roadmap |
 | [Legal and Provider Terms](docs/LEGAL.md) | Operator responsibilities and provider links |
-| [Cost savings workflows](docs/COST_SAVINGS.md) | Host-native vs delegate decision tree and operator commands |
+| [Cost savings workflows](docs/COST_SAVINGS.md) | Host-native vs utility delegation and operator commands |
+| [Competitive positioning](docs/COMPETITIVE.md) | Threnody vs heavy swarm platforms; contract-first alignment |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common fixes |
 
 ---

@@ -113,5 +113,6 @@ guarantee continued compatibility with any provider's rules.
 
 - See [docs/LEGAL.md](docs/LEGAL.md) for operator responsibilities and provider links
 - Host shells execute by default; Claude Code is a router-only coordination anchor
-- `execute_subtask` delegates to other backends; override router-only hosts via `providers.router_only_allow_execution`
+- `execute_subtask` is utility-delegation only (opt-in OpenCode, Aider, local endpoints); host→host delegation is blocked
+- Override router-only subprocess delegation via `providers.router_only_allow_execution` only when you accept provider-policy risk
 - Safer routing examples live in [config.example.yaml](config.example.yaml)
