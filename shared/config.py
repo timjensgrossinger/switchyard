@@ -65,7 +65,7 @@ SPECULATION_ERROR_PATTERNS: list[str] = [
 # ---------------------------------------------------------------------------
 CONTEXT_MAX_LINES_PER_FILE = 200   # cap per file to keep prompts small
 CONTEXT_MAX_TOTAL_CHARS = 6000     # hard cap on injected context block
-CONTEXT_FUNCTION_RADIUS = 5        # lines above/below a matched function
+CONTEXT_FUNCTION_RADIUS = 5        # lines above and below a matched function
 CONTEXT_MAX_FILE_BYTES = 2_097_152 # 2 MiB — skip files larger than this
 ARTIFACT_MAX_INLINE_CHARS = 2048   # cap per artifact summary before injection truncation
 
@@ -353,8 +353,8 @@ DEFAULT_DELEGATION_UTILITIES: tuple[str, ...] = ("opencode", "aider")
 @dataclass
 class ThresholdConfig:
     """Adaptive threshold configuration with hard bounds."""
-    low_max: float = 0.55        # initial low/medium boundary
-    medium_max: float = 0.80     # initial medium/high boundary
+    low_max: float = 0.55        # initial low-medium boundary
+    medium_max: float = 0.80     # initial medium-high boundary
 
     def __post_init__(self) -> None:
         self.clamp()
@@ -421,7 +421,7 @@ class SpilloverConfig:
     - enabled: whether spillover allocation is enabled (defaults to True)
     - per_provider_concurrency: optional map of provider_id -> integer limit
       When a provider is absent from the map, capacity is treated as unbounded
-      (within any global/system caps enforced elsewhere).
+      (within any global and system caps enforced elsewhere).
     """
 
     enabled: bool = True
@@ -686,7 +686,7 @@ class WorktreeConfig:
     """Worktree isolation settings for execute_subtask."""
     enabled: bool = False
     ttl_hours: float = 24.0
-    base_path: str = ""  # empty → default ~/.local/lib/threnody/worktrees
+    base_path: str = ""  # empty uses default worktrees dir under install root
 
 
 @dataclass(frozen=True)
@@ -1006,7 +1006,7 @@ def _parse_routing_preference(
             return None
         if "/" not in text:
             log.warning(
-                "preferred_routing: tier %r entry %d must be a mapping or 'provider / model' string; skipping %r",
+                "preferred_routing: tier %r entry %d must be a mapping or 'provider:model' string; skipping %r",
                 tier,
                 index,
                 raw_entry,
@@ -1036,7 +1036,7 @@ def _parse_routing_preference(
     model = _normalize_config_text(raw_entry.get("model"))
     if provider is None and model is None:
         log.warning(
-            "preferred_routing: tier %r entry %d must include provider and/or model; skipping %r",
+            "preferred_routing: tier %r entry %d must include provider or model; skipping %r",
             tier,
             index,
             raw_entry,
@@ -1062,7 +1062,7 @@ def _parse_preferred_routing_map(
         normalized_tier = tier.strip().lower() if isinstance(tier, str) else None
         if normalized_tier not in valid_tiers:
             log.warning(
-                "%s: invalid tier %r (must be low/medium/high); skipping",
+                "%s: invalid tier %r (must be low, medium, or high); skipping",
                 context,
                 tier,
             )
@@ -1367,6 +1367,19 @@ class TGsConfig:
     surgical_edit_length_ratio_min: float = SURGICAL_EDIT_LENGTH_RATIO_MIN
     execute_subtask_guard_strict: bool = False
     auto_cascade_mode: bool = True
+
+    # Skill export: export approved learned agents as provider-native skill files
+    skill_export_enabled: bool = True
+    skill_export_providers: list[str] = field(default_factory=lambda: ["claude-code"])
+    skill_promotion_threshold: int = 10
+    skill_auto_promote: bool = False
+
+    # Multi-queen consensus (experimental, subprocess star topology only)
+    consensus_enabled: bool = False
+    consensus_queens: int = 2
+    consensus_queen_tier: str = "low"
+    consensus_judge_tier: str = "low"
+    consensus_max_rounds: int = 0  # 0 = apply to all rounds
 
     @property
     def swarm_max_agents(self) -> int:
@@ -2082,6 +2095,23 @@ class TGsConfig:
             "delegate",
         }:
             cfg.swarm_host_execution_mode = raw_swarm_host_mode.strip().lower()
+        consensus_raw = swarm_raw.get("consensus", {})
+        if not isinstance(consensus_raw, Mapping):
+            consensus_raw = {}
+        cfg.consensus_enabled = consensus_raw.get("enabled", False) is True
+        try:
+            cfg.consensus_queens = max(2, min(3, int(consensus_raw.get("queens", 2))))
+        except (TypeError, ValueError):
+            cfg.consensus_queens = 2
+        _cqt = str(consensus_raw.get("queen_tier", "low")).strip().lower()
+        cfg.consensus_queen_tier = _cqt if _cqt in {"low", "medium", "high"} else "low"
+        _cjt = str(consensus_raw.get("judge_tier", "low")).strip().lower()
+        cfg.consensus_judge_tier = _cjt if _cjt in {"low", "medium", "high"} else "low"
+        try:
+            cfg.consensus_max_rounds = max(0, int(consensus_raw.get("max_consensus_rounds", 0)))
+        except (TypeError, ValueError):
+            cfg.consensus_max_rounds = 0
+
         raw_swarm_host_by_caller = swarm_raw.get("host_execution_mode_by_caller", {})
         if isinstance(raw_swarm_host_by_caller, Mapping):
             cfg.swarm_host_execution_mode_by_caller = {
@@ -2225,6 +2255,21 @@ class TGsConfig:
         cfg.execute_subtask_guard_strict = bool(raw.get("execute_subtask_guard_strict", True))
         cfg.auto_cascade_mode = bool(raw.get("auto_cascade_mode", True))
 
+        learning_raw = raw.get("learning", {})
+        if not isinstance(learning_raw, Mapping):
+            learning_raw = {}
+        skill_export_raw = learning_raw.get("skill_export", {}) if isinstance(learning_raw, Mapping) else {}
+        if not isinstance(skill_export_raw, Mapping):
+            skill_export_raw = {}
+        cfg.skill_export_enabled = skill_export_raw.get("enabled", True) is True
+        _sep = skill_export_raw.get("providers", ["claude-code"])
+        cfg.skill_export_providers = list(_sep) if isinstance(_sep, (list, tuple)) else ["claude-code"]
+        try:
+            cfg.skill_promotion_threshold = int(skill_export_raw.get("promotion_threshold", 10))
+        except (TypeError, ValueError):
+            cfg.skill_promotion_threshold = 10
+        cfg.skill_auto_promote = skill_export_raw.get("auto_promote", False) is True
+
         cfg.thresholds.clamp()
         return cfg
 
@@ -2295,11 +2340,12 @@ class TGsConfig:
 
     @classmethod
     def _routing_preferences_to_list(cls, entries: list[Any]) -> list[dict[str, str]]:
-        return [
-            serialized
-            for entry in entries
-            if (serialized := cls._routing_preference_to_dict(entry)) is not None
-        ]
+        result = []
+        for entry in entries:
+            serialized = cls._routing_preference_to_dict(entry)
+            if serialized is not None:
+                result.append(serialized)
+        return result
 
     @staticmethod
     def _usage_window_entry_to_dict(entry: Any) -> dict[str, Any] | None:
@@ -2326,11 +2372,12 @@ class TGsConfig:
             windows = config.get("windows")
         if not isinstance(windows, list):
             return []
-        return [
-            serialized
-            for entry in windows
-            if (serialized := cls._usage_window_entry_to_dict(entry)) is not None
-        ]
+        result = []
+        for entry in windows:
+            serialized = cls._usage_window_entry_to_dict(entry)
+            if serialized is not None:
+                result.append(serialized)
+        return result
 
     def to_legacy_dict(self) -> dict[str, Any]:
         """Convert to the dict format the original code expected."""
@@ -2373,9 +2420,10 @@ class TGsConfig:
                     for caller, tier_map in sorted(self.preferred_routing_by_caller.items())
                 },
                 "usage_windows": {
-                    provider_id: windows
-                    for provider_id, config in sorted(self.provider_usage_windows.items())
-                    if (windows := self._usage_window_config_to_list(config))
+                    provider_id: _w
+                    for provider_id, _cfg in sorted(self.provider_usage_windows.items())
+                    for _w in [self._usage_window_config_to_list(_cfg)]
+                    if _w
                 },
                 "endpoint_providers": [entry.to_dict() for entry in self.endpoint_providers],
                 "router_only_allow_execution": list(self.router_only_allow_execution),

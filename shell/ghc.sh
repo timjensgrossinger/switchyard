@@ -1206,9 +1206,19 @@ PY
             shift || true
             case "$mode" in
                 summary) _tgs_learning_summary "$@" ;;
+                report)
+                    local pybin
+                    pybin=$(_tgs_python) || return 1
+                    "$pybin" -m shared.learning_report "$@"
+                    ;;
+                export)
+                    local pybin
+                    pybin=$(_tgs_python) || return 1
+                    "$pybin" -m shared.agent_export "$@"
+                    ;;
                 ""|-h|--help) _tgs_usage ;;
                 *)
-                    echo "threnody learning: subcommand must be summary" >&2
+                    echo "threnody learning: subcommand must be summary, report, or export" >&2
                     return 1
                     ;;
             esac

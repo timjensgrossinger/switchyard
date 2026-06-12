@@ -788,6 +788,22 @@ install_threnody_tier_agents() {
     info "Installed Threnody tier agent templates to $target_dir"
 }
 
+install_threnody_skills() {
+    local target_dir="$1"
+    if [[ ! -d "$INSTALL_DIR/skills" ]]; then
+        return 0
+    fi
+    mkdir -p "$target_dir"
+    for skill_dir in "$INSTALL_DIR/skills"/threnody-*/; do
+        [[ -d "$skill_dir" ]] || continue
+        local skill_name
+        skill_name="$(basename "$skill_dir")"
+        mkdir -p "$target_dir/$skill_name"
+        cp "$skill_dir/SKILL.md" "$target_dir/$skill_name/SKILL.md" 2>/dev/null || true
+    done
+    info "Installed Threnody skills to $target_dir"
+}
+
 write_managed_file() {
     local target="$1"
     local body="$2"
@@ -821,6 +837,7 @@ if [[ "$HAS_CLAUDE" -eq 1 ]]; then
         info "Synced managed routing instructions to $CLAUDE_MD"
         SYNCED_CLAUDE_INSTRUCTIONS=1
         install_threnody_tier_agents "$HOME/.claude/agents"
+        install_threnody_skills "$HOME/.claude/skills"
     fi
 
     if routing_hooks_enabled "claude-code"; then

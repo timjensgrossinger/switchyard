@@ -33,6 +33,36 @@ def _format_patterns(patterns: list[str]) -> str:
     return ", ".join(f"`{pattern}`" for pattern in patterns)
 
 
+def _render_claude_pointer_block(
+    config: TGsConfig,
+    profile: "ShellRoutingProfile",
+    *,
+    verbatim: bool = False,
+) -> str:
+    """Slim ~10-line pointer block for Claude Code. Full contracts live in skills."""
+    heading = "# Threnody Integration for Claude Code" if verbatim else "## Threnody Integration for Claude Code"
+    mode = "guarded" if profile.route_task_mandatory else "advisory"
+    lines: list[str] = [heading, ""]
+    lines.append(f"These instructions apply only to **Claude Code** (`claude-code`).")
+    lines.append("")
+    lines.append(f"### Routing mode: {mode}")
+    lines.append("")
+    if profile.route_task_mandatory:
+        lines.append("Call `route_task` before writing or editing any non-exempt file. "
+                     "A managed `PreToolUse` hook enforces this — it calls `validate_routing_guard` on every `Edit`/`Write`.")
+    else:
+        lines.append("`route_task` is recommended before non-trivial edits but not enforced.")
+    lines.append("")
+    lines.append("### Skills")
+    lines.append("")
+    lines.append("Full routing contracts, execution patterns, and host-native details are in the installed Threnody skills:")
+    lines.append("`/threnody-routing` · `/threnody-plan` · `/threnody-task` · "
+                 "`/threnody-subtasks` · `/threnody-swarm` · `/threnody-fullstack`")
+    lines.append("")
+    lines.append("Run `/threnody-routing` first if you are unfamiliar with Threnody.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_shell_instructions(
     config: TGsConfig,
     shell_id: str,
@@ -41,6 +71,8 @@ def render_shell_instructions(
 ) -> str:
     """Render a managed Threnody instruction block for one shell."""
     profile = config.routing_policy.effective_profile(shell_id)
+    if profile.shell_id == "claude-code":
+        return _render_claude_pointer_block(config, profile, verbatim=verbatim)
     label = SHELL_LABELS.get(profile.shell_id, profile.shell_id)
     lines: list[str] = []
     if not verbatim:

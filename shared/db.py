@@ -2,7 +2,7 @@
 """
 Threnody SQLite database layer.
 
-WAL mode — concurrent reads from hot/warm/cold paths.
+WAL mode — concurrent reads from hot, warm, and cold paths.
 Stores: result cache, plan cache, telemetry, adaptive thresholds,
         agent definitions, code style profiles, project routing profiles.
 """
@@ -481,7 +481,7 @@ class Database:
                 ts           REAL NOT NULL
             );
 
-            -- Agent audit trail for draft/merge/promotion lifecycle
+            -- Agent audit trail for draft, merge, and promotion lifecycle
             CREATE TABLE IF NOT EXISTS agent_audit (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_id     TEXT NOT NULL,
@@ -674,6 +674,7 @@ class Database:
         self._ensure_bandit_schema(conn)
         self._ensure_convergence_schema(conn)
         self._ensure_compression_schema(conn)
+        self._ensure_agent_export_columns(conn)
         self._record_swarm_schema_version(conn)
         conn.commit()
 
@@ -681,7 +682,7 @@ class Database:
     def _ensure_telemetry_columns(conn: sqlite3.Connection) -> None:
         """Add newer telemetry columns to older databases.
 
-        Phase 15 additions (D-01 / D-02 / D-03): add queryable, first-class
+        Phase 15 additions (D-01, D-02, D-03): add queryable, first-class
         telemetry columns for core explainability fields while preserving the
         existing `parse_diagnostics` / `extras` JSON payload.
         """
@@ -1267,7 +1268,7 @@ class Database:
     @contextmanager
     def conn(self) -> Iterator[sqlite3.Connection]:
         """
-        Yield a thread-safe SQLite connection with automatic commit/rollback.
+        Yield a thread-safe SQLite connection with automatic commit or rollback.
         
         This context manager uses thread-local connections from _get_connection()
         to safely support concurrent access from multiple threads. Each thread
@@ -1513,6 +1514,15 @@ class Database:
             conn.execute(
                 "ALTER TABLE cost_telemetry"
                 " ADD COLUMN context_compression_ratio REAL DEFAULT NULL"
+            )
+
+    @staticmethod
+    def _ensure_agent_export_columns(conn: sqlite3.Connection) -> None:
+        """Add exported_global_ts column to agent_definitions for promotion tracking."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_definitions)").fetchall()}
+        if "exported_global_ts" not in cols:
+            conn.execute(
+                "ALTER TABLE agent_definitions ADD COLUMN exported_global_ts REAL DEFAULT NULL"
             )
 
     @staticmethod
@@ -3810,7 +3820,7 @@ class Database:
         This method was extended in Phase 15 to include first-class explainability
         columns (urgency_score, selected_topology, fanout_final_action and
         various counts). The additions are additive and optional to preserve
-        backward compatibility with older rows and readers per D-01/D-02/D-03.
+        backward compatibility with older rows and readers per D-01, D-02, D-03.
         """
         with self.conn() as conn:
             # Build a stable ordered list of columns and corresponding values.
@@ -4218,7 +4228,10 @@ class Database:
             if bounded_quality is None:
                 next_quality = prior_quality
             else:
-                next_quality = ((prior_quality * row[0]) + bounded_quality) / count if count != 0 else prior_quality
+                if count != 0:
+                    next_quality = ((prior_quality * row[0]) + bounded_quality) / count
+                else:
+                    next_quality = prior_quality
             prior_rework = _coerce_db_bool(row[3])
             next_rework = prior_rework if rework_detected is None else (prior_rework or bool(rework_detected))
             conn.execute(
@@ -4401,7 +4414,8 @@ class Database:
         """Return a single agent definition by pattern hash."""
         with self.conn() as conn:
             row = conn.execute(
-                "SELECT id, pattern_hash, pattern_desc, definition, match_count, ts, promotion_state "
+                "SELECT id, pattern_hash, pattern_desc, definition, match_count, ts, "
+                "promotion_state, exported_global_ts "
                 "FROM agent_definitions WHERE pattern_hash = ?",
                 (pattern_hash,),
             ).fetchone()
@@ -4415,6 +4429,7 @@ class Database:
             "match_count": row[4],
             "ts": row[5],
             "promotion_state": row[6],
+            "exported_global_ts": row[7],
         }
 
     def get_all_agent_definitions(self) -> list[dict]:

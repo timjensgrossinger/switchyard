@@ -18,6 +18,16 @@ swarm:
   #   claude-code: host_native
   #   github-copilot: host_native
 
+  # Multi-queen consensus (EXPERIMENTAL — off by default)
+  # Runs N low-tier queens in parallel for each coordinator round; a judge selects the winner.
+  # Token cost: ~2-3x a single coordinator round. Enable only on subprocess star topology.
+  # consensus:
+  #   enabled: false
+  #   queens: 2                # parallel queens per round (clamped 2-3)
+  #   queen_tier: low          # tier for queen subtasks
+  #   judge_tier: low          # tier for the judge when queens disagree
+  #   max_consensus_rounds: 1  # rounds that use consensus (0 = all rounds)
+
 budgets:
   default_hard_cap_tokens: 1000
   default_soft_warning_pct: 0.8
@@ -125,3 +135,14 @@ resilience:
   auth_probe:
     ttl_seconds: 600
     enabled: true
+
+learning:
+  # Skill export — write approved learned agents as provider-native skill files
+  skill_export:
+    enabled: true
+    providers:
+      - claude-code
+      # - github-copilot-cli   # writes to .github/agents/<slug>.md
+      # - opencode             # writes to .opencode/agent/<slug>.md
+    promotion_threshold: 10    # match_count before promoting to user-global skills dir
+    auto_promote: false        # promote automatically on threshold hit; default: manual via CLI
