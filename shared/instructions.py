@@ -39,27 +39,73 @@ def _render_claude_pointer_block(
     *,
     verbatim: bool = False,
 ) -> str:
-    """Slim ~10-line pointer block for Claude Code. Full contracts live in skills."""
+    """Instruction block for Claude Code with inline orchestration contract."""
     heading = "# Threnody Integration for Claude Code" if verbatim else "## Threnody Integration for Claude Code"
     mode = "guarded" if profile.route_task_mandatory else "advisory"
     lines: list[str] = [heading, ""]
-    lines.append(f"These instructions apply only to **Claude Code** (`claude-code`).")
+    lines.append("These instructions apply only to **Claude Code** (`claude-code`).")
     lines.append("")
     lines.append(f"### Routing mode: {mode}")
     lines.append("")
     if profile.route_task_mandatory:
-        lines.append("Call `route_task` before writing or editing any non-exempt file. "
-                     "A managed `PreToolUse` hook enforces this — it calls `validate_routing_guard` on every `Edit`/`Write`.")
+        lines.append(
+            "Call `route_task` before writing or editing any non-exempt file. "
+            "A managed `PreToolUse` hook enforces this — it calls `validate_routing_guard` on every `Edit`/`Write`."
+        )
     else:
         lines.append("`route_task` is recommended before non-trivial edits but not enforced.")
     lines.append("")
-    lines.append("### Skills")
-    lines.append("")
-    lines.append("Full routing contracts, execution patterns, and host-native details are in the installed Threnody skills:")
-    lines.append("`/threnody-routing` · `/threnody-plan` · `/threnody-task` · "
-                 "`/threnody-subtasks` · `/threnody-swarm` · `/threnody-fullstack`")
-    lines.append("")
-    lines.append("Run `/threnody-routing` first if you are unfamiliar with Threnody.")
+
+    lines.extend([
+        "### Orchestration",
+        "",
+        "Always route work through Threnody so each task runs on the correct tier model.",
+        "Every code task — including post-plan execution — follows this contract:",
+        "",
+        "| Task scope | Entry point | Method |",
+        "|------------|-------------|--------|",
+        "| Single file / one concern | `route_task` | direct edit with returned tier model |",
+        "| Multi-file / multi-concern | `decompose_task` or `plan_task` | spawn wave agents per `host_spawn_waves` |",
+        "| Large parallel / swarm | `execute_swarm` | `/threnody-swarm` skill |",
+        "| Fullstack (fe + be + api) | `fleet_plan` | `/threnody-fullstack` skill |",
+        "",
+        "Typed subagents per tier (Claude Code only):",
+        "",
+        "| Tier | Subagent type | Default model |",
+        "|------|---------------|---------------|",
+        "| low | `threnody-low` | haiku |",
+        "| medium | `threnody-medium` | sonnet |",
+        "| high | `threnody-high` | opus |",
+        "",
+        "After each host wave completes, call `report_host_wave` with `workspace_root`, per-agent results, "
+        "and `output_excerpt`. On the final wave set `terminal=true`.",
+        "",
+        "### Multi-queen consensus",
+        "",
+        "`consensus_enabled: true` in config activates parallel coordinators for subprocess swarms "
+        "(star topology). For host-native Claude Code waves, the equivalent is fanning out 2–3 independent "
+        "`Plan` agents for complex architectural decisions, then synthesizing before committing.",
+        "",
+    ])
+
+    if not profile.route_task_mandatory:
+        lines.extend([
+            "### Guarded mode",
+            "",
+            "To add `PreToolUse` hook enforcement (hard-blocks `Edit`/`Write` without prior `route_task`), "
+            "set `routing_policy.shells.claude-code.mode: guarded` in config.yaml and re-run `./install.sh`.",
+            "",
+        ])
+
+    lines.extend([
+        "### Skills",
+        "",
+        "Full routing contracts, execution patterns, and host-native details are in the installed Threnody skills:",
+        "`/threnody-routing` · `/threnody-plan` · `/threnody-task` · "
+        "`/threnody-subtasks` · `/threnody-swarm` · `/threnody-fullstack`",
+        "",
+        "Run `/threnody-routing` first if you are unfamiliar with Threnody.",
+    ])
     return "\n".join(lines).rstrip() + "\n"
 
 
