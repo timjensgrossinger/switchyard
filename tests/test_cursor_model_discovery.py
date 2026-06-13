@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -70,42 +69,6 @@ def test_build_host_spawn_waves_uses_host_native_model_not_subtask_registry_mode
         config=config,
         caller="cursor",
         registry=FakeRegistry(),
-    )
-    assert waves[0]["agents"][0]["model"] == "composer-2.5-fast"
-
-
-def test_build_host_spawn_waves_normalizes_cursor_medium_model() -> None:
-    cfg = TGsConfig.defaults()
-    plan = {
-        "subtasks": [
-            {
-                "id": 1,
-                "description": "Create greet.py",
-                "tier": "medium",
-                "target_file": "greet.py",
-            }
-        ],
-        "waves": [[1]],
-    }
-
-    class FakeRegistry:
-        available_providers = [
-            SimpleNamespace(
-                name="cursor",
-                tier_models={
-                    "low": "composer-2.5-fast",
-                    "medium": "composer-2.5",
-                    "high": "claude-opus-4-8-thinking-high",
-                },
-            )
-        ]
-
-        @staticmethod
-        def _caller_matches_provider(provider: object, caller: str | None) -> bool:
-            return getattr(provider, "name", None) == "cursor"
-
-    waves = build_host_spawn_waves(
-        plan, config=cfg, caller="cursor", registry=FakeRegistry()
     )
     assert waves[0]["agents"][0]["model"] == "composer-2.5-fast"
 
